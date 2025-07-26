@@ -1,3 +1,3 @@
 [submodule "sssd_speculator_sglang"]
 	path = sssd_speculator_sglang
-	url = git@github.com:michelemarzollo/sglang-sssd.git
+	url = git@github.com:michelemarzollo/sssd_speculator.git
