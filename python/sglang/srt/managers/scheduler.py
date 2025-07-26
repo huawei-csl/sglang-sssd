@@ -357,6 +357,14 @@ class Scheduler(
                 target_worker=self.tp_worker,
                 dp_rank=dp_rank,
             )
+        elif self.spec_algorithm.is_sssd():
+            from sglang.srt.speculative.sssd_worker import SSSDWorker
+
+            self.draft_worker = SSSDWorker(
+                gpu_id=gpu_id,
+                server_args=server_args,
+                target_worker=self.tp_worker,
+            )
         else:
             self.draft_worker = None
 
@@ -1382,6 +1390,7 @@ class Scheduler(
             self.cum_spec_accept_count += self.spec_num_total_forward_ct
             self.spec_num_total_accepted_tokens = self.spec_num_total_forward_ct = 0
             msg += f"accept len: {spec_accept_length:.2f}, "
+            self.send_metrics_from_scheduler.send_pyobj({"avg_accept_length": spec_accept_length})
 
         if self.disaggregation_mode == DisaggregationMode.DECODE:
             msg += f"pre-allocated usage: {self.disagg_decode_prealloc_queue.num_tokens_pre_allocated / self.max_total_num_tokens:.2f}, "
@@ -1765,7 +1774,7 @@ class Scheduler(
             # These 2 values are needed for processing the output, but the values can be
             # modified by overlap schedule. So we have to copy them here so that
             # we can use the correct values in output processing.
-            if batch.return_logprob or self.spec_algorithm.is_eagle():
+            if batch.return_logprob or self.spec_algorithm.is_speculative():  # TODO: Do we need it for sssd?
                 extend_input_len_per_req = [req.extend_input_len for req in batch.reqs]
             else:
                 extend_input_len_per_req = None

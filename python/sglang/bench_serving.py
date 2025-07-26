@@ -27,6 +27,7 @@ from datetime import datetime
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from datasets import load_dataset
 
 import aiohttp
 import numpy as np
@@ -679,6 +680,11 @@ def get_dataset(args, tokenizer):
             apply_chat_template=args.apply_chat_template,
             random_sample=True,
         )
+    elif args.dataset_name == "mt-bench":
+        input_requests = get_mtbench_dataset(
+            num_requests=args.num_prompts,
+            tokenizer=tokenizer,
+            fixed_output_len=args.sharegpt_output_len)
     else:
         raise ValueError(f"Unknown dataset: {args.dataset_name}")
     return input_requests
@@ -1008,6 +1014,25 @@ def sample_sharegpt_requests(
     print(f"#Input tokens: {np.sum([x.prompt_len for x in filtered_dataset])}")
     print(f"#Output tokens: {np.sum([x.output_len for x in filtered_dataset])}")
     return filtered_dataset
+
+
+def get_mtbench_dataset(num_requests, tokenizer, fixed_output_len=256) -> List[DatasetRow]:
+    ds = load_dataset("philschmid/mt-bench", split="train")
+    rows = []
+    sys_prompt = "You are a helpful assistant."
+    for idx, turns in enumerate(ds["turns"]):
+        if idx >= num_requests:
+            break
+        prompt = tokenizer.apply_chat_template(
+            [{"role": "system", "content": sys_prompt},
+             {"role": "user",   "content": turns[0]}],
+            add_generation_prompt=True,
+            tokenize=False
+        )
+        rows.append(DatasetRow(prompt=prompt,
+                               prompt_len=len(tokenizer(prompt).input_ids),
+                               output_len=fixed_output_len))
+    return rows
 
 
 def sample_random_requests(
@@ -1382,7 +1407,7 @@ async def benchmark(
         )
     else:
         print(
-            f"Warmup completed with {args.warmup_requests} sequences. Starting main benchmark run..."
+            f"Warmup completed with {warmup_requests} sequences. Starting main benchmark run..."
         )
 
     # Flush cache

@@ -64,7 +64,6 @@ def draft_tp_context(tp_group: GroupCoordinator):
     with patch_tensor_parallel_group(tp_group):
         yield
 
-
 class EAGLEWorker(TpModelWorker):
 
     def __init__(
@@ -309,6 +308,7 @@ class EAGLEWorker(TpModelWorker):
             A tuple of the final logit output of the target model, next tokens accepted,
             the batch id (used for overlap schedule), and number of accepted tokens.
         """
+        # Prefill
         if batch.forward_mode.is_extend() or batch.is_extend_in_batch:
             logits_output, next_token_ids, bid, seq_lens_cpu = (
                 self.forward_target_extend(batch)
@@ -318,18 +318,22 @@ class EAGLEWorker(TpModelWorker):
                     batch, logits_output.hidden_states, next_token_ids, seq_lens_cpu
                 )
             return logits_output, next_token_ids, bid, 0, False
+        # Decode
         else:
+            # Speculate draft tokens
             with self.draft_tp_context(self.draft_model_runner.tp_group):
                 spec_info = self.draft(batch)
+            # Verify draft tokens
             logits_output, verify_output, model_worker_batch, can_run_cuda_graph = (
                 self.verify(batch, spec_info)
             )
-
+            # Special case for drafting?
             if self.check_forward_draft_extend_after_decode(batch):
                 with self.draft_tp_context(self.draft_model_runner.tp_group):
                     self.forward_draft_extend_after_decode(
                         batch,
                     )
+
             return (
                 logits_output,
                 verify_output.verified_id,

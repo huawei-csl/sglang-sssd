@@ -232,7 +232,7 @@ class CudaGraphRunner:
         self.capture_forward_mode = ForwardMode.DECODE
         self.capture_hidden_mode = CaptureHiddenMode.NULL
         self.num_tokens_per_bs = 1
-        if model_runner.spec_algorithm.is_eagle():
+        if model_runner.spec_algorithm.is_speculative():
             if self.model_runner.is_draft_worker:
                 raise RuntimeError("This should not happen")
             else:
@@ -343,7 +343,7 @@ class CudaGraphRunner:
         if self.require_mlp_tp_gather:
             cuda_graph_bs = (
                 sum(forward_batch.global_num_tokens_cpu) // self.num_tokens_per_bs
-                if self.model_runner.spec_algorithm.is_eagle()
+                if self.model_runner.spec_algorithm.is_speculative()
                 else sum(forward_batch.global_num_tokens_cpu)
             )
         else:
@@ -638,7 +638,7 @@ class CudaGraphRunner:
         if self.require_mlp_tp_gather:
             total_batch_size = (
                 sum(forward_batch.global_num_tokens_cpu) / self.num_tokens_per_bs
-                if self.model_runner.spec_algorithm.is_eagle()
+                if self.model_runner.spec_algorithm.is_speculative()
                 else sum(forward_batch.global_num_tokens_cpu)
             )
             index = bisect.bisect_left(self.capture_bs, total_batch_size)
@@ -754,6 +754,32 @@ class CudaGraphRunner:
                     seq_lens_cpu=None,
                 )
 
+        elif self.model_runner.spec_algorithm.is_sssd():
+            from sglang.srt.speculative.sssd_utils import SSSDVerifyInput
+
+            if self.model_runner.is_draft_worker:
+                raise RuntimeError("This should not happen.")
+            else:
+                spec_info = SSSDVerifyInput(
+                    draft_token=None,
+                    custom_mask=torch.ones(
+                        (num_tokens * self.model_runner.model_config.context_len),
+                        dtype=torch.bool,
+                        device="cuda",
+                    ),
+                    positions=None,
+                    retrive_index=None,
+                    retrive_next_token=None,
+                    retrive_next_sibling=None,
+                    retrive_cum_len=None,
+                    spec_steps=self.model_runner.server_args.speculative_num_steps,
+                    topk=self.model_runner.server_args.speculative_eagle_topk,
+                    draft_token_num=self.model_runner.server_args.speculative_num_draft_tokens,
+                    capture_hidden_mode=CaptureHiddenMode.NULL,
+                    seq_lens_sum=None,
+                    seq_lens_cpu=None,
+                )
+        
         return spec_info
 
 

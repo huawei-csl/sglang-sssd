@@ -521,3 +521,42 @@ def resolve_obj_by_qualname(qualname: str) -> Any:
     module_name, obj_name = qualname.rsplit(".", 1)
     module = importlib.import_module(module_name)
     return getattr(module, obj_name)
+
+# Extra utils for spec-dec
+from datetime import datetime
+TIMESTAMP_FORMAT = "%Y-%m-%d_%H-%M-%S-%f"
+def get_timestamp_str() -> str:
+    """Creates a Year-to-microsecond timestamp."""
+    return datetime.now().strftime(TIMESTAMP_FORMAT)
+
+def generate_output_path(base_path: str) -> str:
+    return f"{base_path}/{get_timestamp_str()}"
+
+def read_json(path: str) -> dict | list[dict]:
+    with open(path, "r") as f:
+        return json.load(f)
+
+def save_json(path: str, data: dict | list[dict], sort_keys=True):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=4, sort_keys=sort_keys)
+
+def print_rounded_dictionary(data):
+  """
+  Prints a single-layer dictionary with all numerical values rounded to two decimal places.
+
+  Args:
+    data: A dictionary with a single layer of key-value pairs.
+  """
+  if not isinstance(data, dict):
+    print("Error: Input must be a dictionary.")
+    return
+
+  formatted_dict = {}
+  for key, value in data.items():
+    if isinstance(value, (int, float)):
+      formatted_dict[key] = round(value, 2)
+    else:
+      formatted_dict[key] = value
+
+  print(json.dumps(formatted_dict, indent=2))
+

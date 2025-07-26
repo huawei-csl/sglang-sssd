@@ -29,6 +29,7 @@ runtime_common = [
     "modelscope",
     "msgspec",
     "ninja",
+    "optuna",
     "orjson",
     "outlines==0.1.11",
     "packaging",
