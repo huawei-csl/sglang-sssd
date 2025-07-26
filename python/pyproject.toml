@@ -32,6 +32,7 @@ runtime_common = [
     "ninja",
     "openai==1.99.1",
     "openai-harmony==0.0.4",
+    "optuna",
     "orjson",
     "outlines==0.1.11",
     "packaging",

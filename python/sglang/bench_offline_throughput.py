@@ -23,6 +23,8 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+from sglang.metrics_receiver import MetricsReceiver
+from sglang.utils import print_rounded_dictionary
 from sglang.bench_serving import (
     DatasetRow,
     get_dataset,
@@ -71,7 +73,7 @@ class BenchArgs:
             "--dataset-name",
             type=str,
             default="sharegpt",
-            choices=["sharegpt", "random", "generated-shared-prefix"],
+            choices=["sharegpt", "random", "generated-shared-prefix", "mt-bench"],
             help="Name of the dataset to benchmark on.",
         )
         parser.add_argument(
@@ -310,7 +312,7 @@ def monitor_trace_file(known_files, directory, interval=1):
 def throughput_test(
     server_args: ServerArgs,
     bench_args: BenchArgs,
-):
+) -> dict:
     if bench_args.backend == "engine":
         backend = Engine(**dataclasses.asdict(server_args))
         if not backend:
@@ -345,6 +347,7 @@ def throughput_test(
         dataset_path=bench_args.dataset_path,
     )
 
+
     # Warm up
     if not bench_args.skip_warmup:
         logging.info("\nWarmup...")
@@ -358,6 +361,17 @@ def throughput_test(
         )
         time.sleep(0.5)
 
+
+    # Initialize metrics receiver if needed
+    metrics_receiver = None
+    if server_args.enable_metrics and hasattr(backend, 'port_args'):
+        try:
+            metrics_receiver = MetricsReceiver(backend.port_args)
+            metrics_receiver.start()
+        except Exception as e:
+            print(f"Failed to start metrics receiver: {e}")
+
+
     logging.info("\nBenchmark...")
     result = throughput_test_once(
         backend_name=bench_args.backend,
@@ -369,10 +383,17 @@ def throughput_test(
     )
     backend.shutdown()
 
+    extra_metrics = {}
+    if metrics_receiver:
+        metrics_receiver.stop()
+        received_metrics = metrics_receiver.get_all_metrics()
+        extra_metrics["avg_acceptance_length"] = float(np.mean([d["avg_accept_length"] for d in received_metrics if isinstance(d, dict)]))
+
+    result["extra_metrics"] = extra_metrics 
     if bench_args.result_filename:
         with open(bench_args.result_filename, "a") as fout:
             fout.write(json.dumps(result) + "\n")
-
+    
     print(
         "\n{s:{c}^{n}}".format(s=" Offline Throughput Benchmark Result ", n=50, c="=")
     )
@@ -409,6 +430,8 @@ def throughput_test(
         )
     )
     print("=" * 50)
+    print("Extra metrics:")
+    print_rounded_dictionary(result['extra_metrics'])
 
     return result
 
