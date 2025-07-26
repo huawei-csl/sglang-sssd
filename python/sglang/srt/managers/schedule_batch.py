@@ -589,6 +589,8 @@ class Req:
         # The number of verification forward passes in the speculative decoding.
         # This is used to compute the average acceptance length per request.
         self.spec_verify_ct = 0
+        # For SSSD speculative decoding: the converted id as it is used by the speculator
+        self.sssd_id = None
 
         # For metrics
         self.time_stats: TimeStats = TimeStats()
@@ -1529,7 +1531,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         self.forward_mode = ForwardMode.DECODE
         bs = len(self.reqs)
 
-        if self.spec_algorithm.is_eagle():
+        if self.spec_algorithm.is_speculative():
             # if spec decoding is used, the decode batch is prepared inside
             # `forward_batch_speculative_generation` after running draft models.
             return
