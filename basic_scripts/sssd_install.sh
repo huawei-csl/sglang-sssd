@@ -28,7 +28,9 @@ conda install -y -c nvidia -c conda-forge cuda-toolkit=12.6.3
 # Install SGLang
 python3 -m pip install -e "python[all]"
 
-# Install SSSD
 conda install -y cmake
 conda install -y -c conda-forge gcc=12.1.0
-(cd sssd_speculator_sglang && pip install -e .)
+# Purge any existing SSSD installation
+(cd sssd_speculator && pip uninstall sssd_speculator -y && rm -rf build/ && rm -rf *.egg-info/ && rm -rf dist/ && rm -f sssd_speculator/*.so)
+# Install SSSD (for some reason pip install -e . is broken)
+(cd sssd_speculator && python setup.py build_ext --inplace && python setup.py install)
