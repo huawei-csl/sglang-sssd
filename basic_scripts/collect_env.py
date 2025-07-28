@@ -642,6 +642,7 @@ def main():
 
     # Print the dictionary as a JSON object
     print(json.dumps(output_dict, indent=4))
+    os.makedirs("data", exist_ok=True)
     save_json("data/machine_specs.json", output_dict)
 
 
