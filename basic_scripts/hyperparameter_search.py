@@ -72,7 +72,7 @@ def objective(
         )
 
     # EAGLE3 specific constraints
-    if base_server_args.speculative_algorithm == "EAGLE3":
+    if base_server_args.speculative_algorithm == "EAGLE3" or base_server_args.speculative_algorithm == "EAGLE":
         if (
             params["speculative_eagle_topk"] * (params["speculative_num_steps"] - 1) + 1
             < params["speculative_num_draft_tokens"]
@@ -221,20 +221,6 @@ def run_hyperparameter_search(
     num_successful_trials: int,
     out_dir: str,
 ):
-    # TODO rebuild existing datastore (Michele updated it)
-    # TODO copy back datastore onto network drive
-
-    # SSSD for evaluation:
-    # TODO fix to top k5
-    # batch 1 : draft 32
-    # batch 4 : draft 22
-    # batch 8 : draft 16
-    # batch 16 : draft 8
-    # batch 32 : draft 4
-    # batch 48 : draft 3
-    # batch 64 : draft 2
-    # batch 128 : draft 1
-
     # TODO
     # Alternative datasets for datastore:
     # https://huggingface.co/datasets/Magpie-Align/Magpie-Llama-3.1-Pro-1M-v0.1
@@ -263,8 +249,7 @@ def run_hyperparameter_search(
             "num_prompts": num_prompts,
         }
 
-        # TODO support EAGLE2 as well
-        if speculative_algorithm == "EAGLE3":
+        if speculative_algorithm == "EAGLE3" or speculative_algorithm == "EAGLE":
             base_args = ServerArgs(**asdict(server_args) | extra_server_args)
             # Define the search space for Optuna (min, max values)
             search_space = {
@@ -281,7 +266,7 @@ def run_hyperparameter_search(
             }
         else:
             raise ValueError(
-                "Unsupported speculative algorithm. Choose either 'EAGLE3' or 'SSSD'."
+                "Unsupported speculative algorithm. Choose either 'EAGLE3', 'EAGLE' or 'SSSD'."
             )
 
         logging.basicConfig(
@@ -329,8 +314,8 @@ def add_hyperparameter_search_args(parser: argparse.ArgumentParser):
         "--batch-sizes",
         type=int,
         nargs="+",
-        default=[1, 4, 8, 16, 32, 48, 64, 128],
-        help="A comma-separated list of batch sizes to run the search for. (e.g., '1,4,8,16')",
+        default=[1, 4, 8, 16, 32, 48, 64],
+        help="A comma-separated list of batch sizes to run the search for. (e.g., 1 4 8 16)",
     )
     parser.add_argument(
         "--max-draft-tokens-in-batch",
