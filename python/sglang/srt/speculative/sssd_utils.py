@@ -243,10 +243,11 @@ class SSSDSpeculator:
             prompt_branch_length=8,
             prompt_prefix_length=self.max_query_length,
             max_output_size=server_args.num_reserved_decode_tokens,
-            live_datastore=True,
+            live_datastore=False,
             update_interval_ms=60 * 1000,
             max_update_chunk_size=512 * 1024 * 1024,
             max_indices=8,
+            max_batch_size=server_args.max_running_requests,
             max_topk=self.topk
         )
 
