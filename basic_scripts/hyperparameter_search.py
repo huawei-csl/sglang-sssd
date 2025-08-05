@@ -5,16 +5,16 @@ import os
 import statistics
 import optuna
 from functools import partial
-from python.sglang.srt.server_args import ServerArgs
-from python.sglang.bench_offline_throughput import BenchArgs, throughput_test
+from sglang.srt.server_args import ServerArgs
+from sglang.bench_offline_throughput import BenchArgs, throughput_test
 from dataclasses import asdict
 from optuna.study import MaxTrialsCallback
 from optuna.trial import TrialState
 import multiprocessing as mp
 
 
-from python.sglang.srt.speculative.sssd_utils import SSSDSpeculator
-from python.sglang.utils import read_json, save_json
+from sglang.srt.speculative.sssd_utils import SSSDSpeculator
+from sglang.utils import get_timestamp_str, read_json, save_json
 
 
 def objective(
@@ -297,6 +297,7 @@ def run_hyperparameter_search(
             "best_latency": study_result.best_trial.value,
             "batch_size": batch_size,
             "best_parameters": study_result.best_params,
+            "timestamp": get_timestamp_str()
         }
 
         if "acceptance_length" in study_result.best_trial.user_attrs:
