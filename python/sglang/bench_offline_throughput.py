@@ -387,7 +387,8 @@ def throughput_test(
     if metrics_receiver:
         metrics_receiver.stop()
         received_metrics = metrics_receiver.get_all_metrics()
-        extra_metrics["avg_acceptance_length"] = float(np.mean([d["avg_accept_length"] for d in received_metrics if isinstance(d, dict)]))
+        if server_args.speculative_algorithm:
+            extra_metrics["avg_acceptance_length"] = float(np.mean([d["avg_accept_length"] for d in received_metrics if isinstance(d, dict)]))
 
     result["extra_metrics"] = extra_metrics 
     if bench_args.result_filename:

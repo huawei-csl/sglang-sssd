@@ -30,7 +30,8 @@ python3 -m pip install -e "python[all]"
 
 conda install -y cmake
 conda install -y -c conda-forge gcc=12.1.0
+
 # Purge any existing SSSD installation
 (cd sssd_speculator && pip uninstall sssd_speculator -y && rm -rf build/ && rm -rf *.egg-info/ && rm -rf dist/ && rm -f sssd_speculator/*.so)
-# Install SSSD (for some reason pip install -e . is broken)
-(cd sssd_speculator && python setup.py build_ext --inplace && python setup.py install)
+# Install SSSD
+(cd sssd_speculator && pip install -e . --config-settings editable_mode=compat)
