@@ -1,8 +1,9 @@
 """Gathers all benchmark results and compacts them into a single JSON file.
 """
 
+import argparse
 import re
-from python.sglang.utils import get_timestamp_str, read_json, save_json
+from sglang.utils import get_timestamp_str, read_json, save_json
 import os
 import json
 
@@ -17,7 +18,9 @@ def read_all_json_files(dir_path:str, sorting_fn=None) -> tuple[list[dict], list
         list: A list containing the parsed JSON data from each file.
     """
     json_data = []
-    filenames = sorted(os.listdir(dir_path), key=sorting_fn) if sorting_fn else []
+    filenames  = [f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))]
+    if sorting_fn:
+        filenames = sorted(filenames, key=sorting_fn)
         
     # Iterate over all files in the directory
     for filename in filenames:
@@ -46,19 +49,46 @@ def process_evaluation_results(eval_results: list[dict], eval_filenames: list[st
         method_name, batch_size = get_name_and_batch_size(filename)
         if method_name not in results:
             results[method_name] = {}
-        results[method_name][batch_size] = result
+        results[method_name][f"batch_{batch_size}"] = result
     return results
+
+
+def parse_args() -> dict:
+    """Parses command line arguments."""
+    parser = argparse.ArgumentParser(description="Gather benchmark results into a single JSON file.")
+    parser.add_argument(
+        "--hparam-benchmark",
+        type=str,
+        default="sharegpt",
+        help="The benchmark to use for hyperparameter search (default: sharegpt).",
+    )
+    parser.add_argument(
+        "--eval-benchmark",
+        type=str,
+        default="mt-bench",
+        help="The benchmark to use for evaluation (default: mt-bench).",
+    )
+    parser.add_argument(
+        "--submission-url",
+        type=str,
+        help="The URL to submit the results to.",
+    )
+    args = parser.parse_args()
+    return vars(args)
 
 def gather_results():
     results_dict = {}
-    benchmark = "mt-bench"
+    args = parse_args()
+    benchmark = args["eval_benchmark"]
+    hparam_benchmark = args["hparam_benchmark"]
 
     # evaluation results
     eval_results, eval_filenames = read_all_json_files(f"data/evaluation/{benchmark}", get_name_and_batch_size)
-    results_dict[f"evaluation_{benchmark}"] = process_evaluation_results(eval_results, eval_filenames)
-
+    results_dict["evaluation"] = {}
+    results_dict["evaluation"][benchmark] = process_evaluation_results(eval_results, eval_filenames)
+    
     # hyperparameters
-    hyperparam_results, _ = read_all_json_files("data/hyperparameter_search", get_name_and_batch_size)
+    hyperparam_results, _ = read_all_json_files(f"data/hyperparameter_search/{hparam_benchmark}", get_name_and_batch_size)
     hyperparam_d = {}
     for r in hyperparam_results:
         alg = r.pop("algorithm")
@@ -66,13 +96,15 @@ def gather_results():
         if alg not in hyperparam_d:
             hyperparam_d[alg] = {}
         hyperparam_d[alg][batch] = r
-    results_dict["hyperparameter_search"] = hyperparam_d
+    results_dict["hyperparameter_search"] = {}
+    results_dict["hyperparameter_search"][hparam_benchmark] = hyperparam_d
 
     # machine specs
     results_dict["machine_specs"] = read_json("data/machine_specs.json"),
 
     # saving
     results_dict["submission_timestamp"] = get_timestamp_str()
+    results_dict["submission_url"] = args["submission_url"]
     output_path = 'data/collected_results.json'
     save_json(output_path, results_dict, sort_keys=False)
     print(f"All Results saved to {output_path}.")
