@@ -15,7 +15,7 @@ import subprocess
 import sys
 from collections import namedtuple
 from typing import cast as _cast
-from python.sglang.utils import save_json
+from sglang.utils import save_json
 
 
 try:

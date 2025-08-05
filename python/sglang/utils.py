@@ -533,8 +533,10 @@ def resolve_obj_by_qualname(qualname: str) -> Any:
 from datetime import datetime
 TIMESTAMP_FORMAT = "%Y-%m-%d_%H-%M-%S-%f"
 def get_timestamp_str() -> str:
-    """Creates a Year-to-microsecond timestamp."""
-    return datetime.now().strftime(TIMESTAMP_FORMAT)
+    """Creates a Year-to-millisecond timestamp."""
+    timestamp = datetime.now().strftime(TIMESTAMP_FORMAT)
+    # Truncate microseconds to milliseconds (keep only first 3 digits)
+    return timestamp[:-3]
 
 def generate_output_path(base_path: str) -> str:
     return f"{base_path}/{get_timestamp_str()}"
@@ -543,9 +545,25 @@ def read_json(path: str) -> dict | list[dict]:
     with open(path, "r") as f:
         return json.load(f)
 
+class InlineArrayEncoder(json.JSONEncoder):
+    """Custom JSON encoder to format lists in a single line.
+    By default json.dumps formats lists in multiple lines like this:
+    [
+            1,
+            5
+    ]
+    which is a crime against the reader, so we reformat it to: [1, 5]
+    """
+    def iterencode(self, o, _one_shot=False):
+        if isinstance(o, list):
+            # In-line format for lists
+            return (f'[{", ".join(map(json.dumps, o))}]')
+        return super().iterencode(o, _one_shot)
+
 def save_json(path: str, data: dict | list[dict], sort_keys=True):
+
     with open(path, "w") as f:
-        json.dump(data, f, indent=4, sort_keys=sort_keys)
+        json.dump(data, f, indent=4, sort_keys=sort_keys, cls=InlineArrayEncoder)
 
 def print_rounded_dictionary(data):
   """
