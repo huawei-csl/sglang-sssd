@@ -24,12 +24,19 @@ WORKDIR /workspace/sglang/
 RUN python3 -m pip install -e "python[all]"
 
 # Install SSSD
-WORKDIR /workspace/sglang/sssd_speculator_sglang
-RUN python3 -m pip install -e .
+WORKDIR /workspace/sglang/sssd_speculator
+RUN python3 -m pip uninstall sssd_speculator -y && rm -rf build/ && rm -rf *.egg-info/ && rm -rf dist/ && rm -f sssd_speculator/*.so
+RUN python3 -m pip install -e . --config-settings editable_mode=compat
 
 WORKDIR /workspace/sglang/
 
 ENV DATA_DIR=data
 
-# Run benchmarks
-CMD ["bash", "basic_scripts/run_e2e.sh"]
+# Add healthcheck that monitors for completion
+# This causes the container to exit if the benchmark has already been run
+# Useful for some systems that will just re-run exited containers
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5m --retries=1 \
+    CMD test -f data/collected_results.json || exit 1
+
+# Run benchmarking script
+CMD ["bash", "-c", "bash basic_scripts/run_e2e.sh && sleep 30"]
