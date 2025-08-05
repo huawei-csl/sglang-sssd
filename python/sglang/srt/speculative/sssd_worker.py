@@ -271,7 +271,7 @@ class SSSDWorker:
             retrive_next_token,
             retrive_next_sibling,
             draft_tokens,
-        ) = self.speculator.get_draft(batch, [self.speculative_num_draft_tokens]*batch.seq_lens.numel())
+        ) = self.speculator.get_draft(batch, [self.speculative_num_draft_tokens]*batch.batch_size())
             
         return SSSDVerifyInput(
             draft_token=draft_tokens,

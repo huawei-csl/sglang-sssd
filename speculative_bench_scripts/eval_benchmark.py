@@ -34,24 +34,19 @@ default_SSSD_mapping = {
         "speculative_num_steps": SSSDSpeculator._default_branch_func(8),
     },
     32: {
-        "speculative_eagle_topk": 5,
+        "speculative_eagle_topk": 3,
         "speculative_num_draft_tokens": 4,
         "speculative_num_steps": SSSDSpeculator._default_branch_func(4),
     },
     48: {
-        "speculative_eagle_topk": 5,
+        "speculative_eagle_topk": 2,
         "speculative_num_draft_tokens": 3,
         "speculative_num_steps": SSSDSpeculator._default_branch_func(3),
     },
     64: {
-        "speculative_eagle_topk": 5,
+        "speculative_eagle_topk": 1,
         "speculative_num_draft_tokens": 2,
         "speculative_num_steps": SSSDSpeculator._default_branch_func(2),
-    },
-    128: {
-        "speculative_eagle_topk": 5,
-        "speculative_num_draft_tokens": 1,
-        "speculative_num_steps": SSSDSpeculator._default_branch_func(1),
     },
 }
 
