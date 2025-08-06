@@ -39,4 +39,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5m --retries=1 \
     CMD test -f data/collected_results.json || exit 1
 
 # Run benchmarking script
-CMD ["bash", "-c", "bash basic_scripts/run_e2e.sh && sleep 30"]
+CMD ["bash", "-c", "bash speculative_bench_scripts/run_e2e.sh && sleep 30"]
