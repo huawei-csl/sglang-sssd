@@ -19,16 +19,16 @@ if [ "${UPLOAD_RESULTS}" = "true" ] && [ -z "${RESULT_REPO_URL}"]; then
 fi
 
 echo "Getting user machine specs..."
-python3 basic_scripts/collect_env.py
+python3 speculative_bench_scripts/collect_env.py
 
 echo "Downloading models..."
-./basic_scripts/download_models.sh
+./speculative_bench_scripts/download_models.sh
 
 echo "Converting EAGLE heads to BF16..."
 EAGLE2_LLAMA_3_1_8B_PATH=${DATA_DIR}/datasets/huggingface/models/jamesliu1/sglang-EAGLE-Llama-3.1-Instruct-8B
 EAGLE3_LLAMA_3_1_8B_PATH=${DATA_DIR}/datasets/huggingface/models/jamesliu1/sglang-EAGLE3-Llama-3.1-Instruct-8B
-python3 basic_scripts/change_model_type.py --model $EAGLE2_LLAMA_3_1_8B_PATH
-python3 basic_scripts/change_model_type.py --model $EAGLE3_LLAMA_3_1_8B_PATH
+python3 speculative_bench_scripts/change_model_type.py --model $EAGLE2_LLAMA_3_1_8B_PATH
+python3 speculative_bench_scripts/change_model_type.py --model $EAGLE3_LLAMA_3_1_8B_PATH
 
 
 echo "Creating SSSD datastores..."
@@ -43,7 +43,7 @@ if [ "$RUN_HYPERPARAMETER_SEARCH" = "true" ]; then
 # FIXME EAGLE2 seems to get "RuntimeError: CUDA error: an illegal memory access was encountered"
 # It's not an important result, so skipped in the interest of time
 # For some reason EAGLE2 is often just called "EAGLE" by the community
-# python3 basic_scripts/hyperparameter_search.py --model $LLAMA3_1_8B_PATH  \
+# python3 speculative_bench_scripts/hyperparameter_search.py --model $LLAMA3_1_8B_PATH  \
 #     --speculative-algorithm EAGLE \
 #     --dataset-name "sharegpt" \
 #     --speculative-draft-model-path $EAGLE2_LLAMA_3_1_8B_PATH \
@@ -64,12 +64,12 @@ if [ "$RUN_HYPERPARAMETER_SEARCH" = "true" ]; then
       --sample-size $SAMPLE_SIZE \
       --log-level $HPARAM_LOGLEVEL"
 
-  python3 basic_scripts/hyperparameter_search.py $COMMON_ARGS \
+  python3 speculative_bench_scripts/hyperparameter_search.py $COMMON_ARGS \
       --speculative-algorithm EAGLE3 \
       --speculative-draft-model-path $EAGLE3_LLAMA_3_1_8B_PATH \
       --hparam-output-dir "data/hyperparameter_search/$HPARAM_BENCHMARK"
 
-  python3 basic_scripts/hyperparameter_search.py $COMMON_ARGS \
+  python3 speculative_bench_scripts/hyperparameter_search.py $COMMON_ARGS \
       --speculative-algorithm SSSD \
       --speculative-draft-model-path $MAGPIE_DATASTORE_IDX_PATH \
       --hparam-output-dir "data/hyperparameter_search/$HPARAM_BENCHMARK"
@@ -98,12 +98,12 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
         --max-running-requests $BATCH_SIZE"    
     
     echo "Running autoregressive baseline on $BENCHMARK for batch size ${BATCH_SIZE}"
-    python3 basic_scripts/eval_benchmark.py $COMMON_ARGS \
+    python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
         --result-filename "$EVAL_DATA_DIR/Autoregressive_$BATCH_SIZE.json"
 
 
     echo "Running EAGLE3 (default parameters) on $BENCHMARK for batch size ${BATCH_SIZE}"
-    python3 basic_scripts/eval_benchmark.py $COMMON_ARGS \
+    python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
         --speculative-algorithm EAGLE3 \
         --speculative-draft-model-path $EAGLE3_LLAMA_3_1_8B_PATH \
         --result-filename "$EVAL_DATA_DIR/EAGLE3-default_$BATCH_SIZE.json"
@@ -115,7 +115,7 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
         echo "Skipping batch size $BATCH_SIZE: file $HPARAM_FILE does not exist"
         continue
     fi
-    python3 basic_scripts/eval_benchmark.py $COMMON_ARGS \
+    python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
         --speculative-algorithm EAGLE3 \
         --speculative-draft-model-path $EAGLE3_LLAMA_3_1_8B_PATH \
         --result-filename "$EVAL_DATA_DIR/EAGLE3-optimised_$BATCH_SIZE.json" \
@@ -123,7 +123,7 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
     
 
     echo "Running SSSD (default parameters) on $BENCHMARK for batch size ${BATCH_SIZE}"
-    python3 basic_scripts/eval_benchmark.py $COMMON_ARGS \
+    python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
         --speculative-algorithm SSSD \
         --speculative-draft-model-path $MAGPIE_DATASTORE_IDX_PATH \
         --result-filename "$EVAL_DATA_DIR/SSSD-default_$BATCH_SIZE.json"
@@ -135,7 +135,7 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
         echo "Skipping batch size $BATCH_SIZE: file $HPARAM_FILE does not exist"
         continue
     fi
-    python3 basic_scripts/eval_benchmark.py $COMMON_ARGS \
+    python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
         --speculative-algorithm SSSD \
         --speculative-draft-model-path $MAGPIE_DATASTORE_IDX_PATH \
         --result-filename "$EVAL_DATA_DIR/SSSD-optimised_$BATCH_SIZE.json" \
@@ -143,7 +143,7 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
 
 
     echo "Running SSSD (Michele parameters) on $BENCHMARK for batch size: ${BATCH_SIZE}"
-    python3 basic_scripts/eval_benchmark.py $COMMON_ARGS \
+    python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
         --speculative-algorithm SSSD \
         --speculative-draft-model-path $MAGPIE_DATASTORE_IDX_PATH \
         --result-filename "$EVAL_DATA_DIR/SSSD-manual_$BATCH_SIZE.json" \
@@ -152,7 +152,7 @@ done
 
 # Collect results
 echo "Gathering Results..."
-python3 basic_scripts/collect_results.py --submission-url "$UPLOAD_URL"
+python3 speculative_bench_scripts/collect_results.py --submission-url "$UPLOAD_URL"
 
 # Upload results
 RESULTS_FILE="data/collected_results.json"
