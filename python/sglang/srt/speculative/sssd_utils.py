@@ -221,10 +221,8 @@ class SSSDSpeculator:
 
     @staticmethod
     def _default_branch_func(speculate_len: int):
-        if speculate_len <= 3:
-            branch_length = speculate_len
-        elif speculate_len == 4:
-            branch_length = 3
+        if speculate_len <= 5:
+            branch_length = speculate_len - 1
         elif speculate_len <= 8:
             branch_length = 5
         else:
@@ -247,8 +245,7 @@ class SSSDSpeculator:
             update_interval_ms=60 * 1000,
             max_update_chunk_size=512 * 1024 * 1024,
             max_indices=8,
-            max_batch_size=server_args.max_running_requests,
-            max_topk=self.topk
+            max_batch_size=server_args.max_running_requests
         )
 
     def add_new_sequence(self, req: Req):
@@ -278,8 +275,11 @@ class SSSDSpeculator:
             speculator_req_ids.append(req.sssd_id)
 
         seq_lens = batch.seq_lens
-
-        branch_lens = [self._default_branch_func(l) for l in speculate_lens]
+        
+        bs = len(speculate_lens)
+        # Assuming all spec_lens are equal
+        branch_lens = [self._default_branch_func(speculate_lens[0])] * bs
+        max_topks = [self.topk] * bs
         
         (
             candidates,
@@ -291,6 +291,7 @@ class SSSDSpeculator:
                 prefixes=prefixes,
                 decoding_lengths=speculate_lens,
                 branch_lengths=branch_lens,
+                max_topks=max_topks,
                 seq_ids=speculator_req_ids
             )
         
