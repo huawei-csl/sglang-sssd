@@ -20,13 +20,13 @@ Note: if you plan to run the built image on a cloud instance, GPUs are usually a
 
 3. Once docker is functioning, clone this repository (with `--recurse-submodules`) and run the following from the root:
 ```
-bash ./basic_scripts/build_docker.sh
+bash ./speculative_bench_scripts/build_docker.sh
 ```
 
 4. If running locally use the following script:
 ```
 export HF_TOKEN=<your_token>
-bash ./basic_scripts/run_docker.sh
+bash ./speculative_bench_scripts/run_docker.sh
 ```
 Otherwise you will want to tag the docker image and push it to a registry (e.g `docker tag sglang_sssd:latest <repository_path>/sglang_sssd:latest && docker push <repository_path>/sglang_sssd:latest`) The image will run the benchmark and then exit.
 
@@ -34,12 +34,12 @@ Otherwise you will want to tag the docker image and push it to a registry (e.g `
 
 **Note**: This route has only been tested for Ubuntu 22.04. For other sytems, you may need to install additional dependencies.
 1. Ensure [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html) is installed, although it is also fine to use `miniconda`.
-2. Clone this repository (with `--recurse-submodules`) and run `bash ./basic_scripts/sssd_install.sh` to create the conda environment and install dependencies.
+2. Clone this repository (with `--recurse-submodules`) and run `bash ./speculative_bench_scripts/sssd_install.sh` to create the conda environment and install dependencies.
 3. Activate the conda environment and then:
 ```
 export HF_TOKEN=<your_token>
 export DATA_DIR=<place_to_download_models_to>
-bash ./basic_scripts/run_e2e.sh
+bash ./speculative_bench_scripts/run_e2e.sh
 ```
 
 ### Extras
