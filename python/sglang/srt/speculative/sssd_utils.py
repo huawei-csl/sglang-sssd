@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 import hashlib
 import sssd_speculator
+import time
 
 from typing import List, Tuple, Optional
 from itertools import chain
@@ -233,6 +234,8 @@ class SSSDSpeculator:
     def _init_speculator(self, server_args):
         datastore_path = server_args.speculative_draft_model_path
         datastore_path = "" if datastore_path is None else datastore_path
+        logger.info("Loading the SSSD speculator...")
+        start_time = time.time()
         self.speculator = sssd_speculator.Reader(
             index_file_path=datastore_path,
             vocab_size=self.tokenizer.vocab_size + 2,
@@ -247,6 +250,9 @@ class SSSDSpeculator:
             max_indices=8,
             max_batch_size=server_args.max_running_requests
         )
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        logger.info(f"Finished loading the SSSD speculator. Time taken: {elapsed_time:.2f} seconds")
 
     def add_new_sequence(self, req: Req):
         speculator_req_id, already_present = self.request_converter.acquire(req.rid)
