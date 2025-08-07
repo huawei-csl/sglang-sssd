@@ -301,7 +301,7 @@ class SSSDWorker:
         model_worker_batch = batch.get_model_worker_batch(
             seq_lens_cpu_cache=spec_info.seq_lens_cpu
         )
-        model_worker_batch.spec_num_draft_tokens = self.speculative_num_draft_tokens + 1
+        model_worker_batch.spec_num_draft_tokens = self.speculative_num_draft_tokens
         assert model_worker_batch.capture_hidden_mode == spec_info.capture_hidden_mode
 
         if batch.has_grammar:
