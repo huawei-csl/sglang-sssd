@@ -1,6 +1,5 @@
 import logging
-import time
-from typing import List, Tuple
+from typing import Optional, Tuple
 
 import torch
 
@@ -85,7 +84,7 @@ class SSSDWorker:
 
     def forward_batch_speculative_generation(
         self, batch: ScheduleBatch
-    ) -> Tuple[LogitsProcessorOutput, List[int], int, int]:
+    ) -> Tuple[LogitsProcessorOutput, torch.Tensor, int, int, bool]:
         """Run speculative decoding forward.
 
         NOTE: Many states of batch is modified as you go through. It is not guaranteed that
@@ -136,7 +135,7 @@ class SSSDWorker:
 
     def forward_target_extend(
         self, batch: ScheduleBatch
-    ) -> Tuple[LogitsProcessorOutput, torch.Tensor, int, torch.Tensor]:
+    ) -> Tuple[LogitsProcessorOutput, torch.Tensor, int, Optional[torch.Tensor]]:
         """Run the target extend.
 
         Args:
@@ -151,7 +150,6 @@ class SSSDWorker:
         # We need the full hidden states to prefill the KV cache of the draft model.
         model_worker_batch = batch.get_model_worker_batch()
         model_worker_batch.capture_hidden_mode = CaptureHiddenMode.NULL
-        model_worker_batch.spec_num_draft_tokens = 1
         logits_output, next_token_ids, _ = self.target_worker.forward_batch_generation(
             model_worker_batch
         )
@@ -298,10 +296,10 @@ class SSSDWorker:
             else ForwardMode.IDLE
         )
         batch.spec_info = spec_info
+
         model_worker_batch = batch.get_model_worker_batch(
             seq_lens_cpu_cache=spec_info.seq_lens_cpu
         )
-        model_worker_batch.spec_num_draft_tokens = self.speculative_num_draft_tokens
         assert model_worker_batch.capture_hidden_mode == spec_info.capture_hidden_mode
 
         if batch.has_grammar:
