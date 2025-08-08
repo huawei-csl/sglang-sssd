@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import torch
 import torch.nn.functional as F
@@ -370,7 +371,7 @@ class SSSDVerifyInput(EagleVerifyInput):
     def verify(
         self,
         batch: ScheduleBatch,
-        logits_output: torch.Tensor,
+        logits_output: LogitsProcessorOutput,
         token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
         page_size: int,
         vocab_mask: Optional[torch.Tensor] = None,  # For grammar
@@ -409,6 +410,11 @@ class SSSDVerifyInput(EagleVerifyInput):
             (bs, self.spec_steps + 1), -1, dtype=torch.int32, device="cuda"
         )
         accept_length = torch.empty((bs,), dtype=torch.int32, device="cuda")
+
+        if bs != len(sampling_info):
+            sampling_info = copy.deepcopy(sampling_info)
+            # NOTE: retrive_index are the indices of the requests that are kept.
+            sampling_info.filter_batch(self.retrive_index.tolist(), self.retrive_index)
 
         # Apply the custom logit processors if registered in the sampling info.
         if sampling_info.has_custom_logit_processor:

@@ -837,11 +837,7 @@ class CudaGraphRunner:
             else:
                 spec_info = SSSDVerifyInput(
                     draft_token=None,
-                    custom_mask=torch.ones(
-                        (num_tokens * self.model_runner.model_config.context_len),
-                        dtype=torch.bool,
-                        device="cuda",
-                    ),
+                    custom_mask=self.custom_mask,
                     positions=None,
                     retrive_index=None,
                     retrive_next_token=None,
