@@ -2,8 +2,9 @@
 # Downloads models, creates SSSD datastores, and runs benchmarks
 set -e
 
-export DATA_DIR="${DATA_DIR:-/storage}"
+export MODEL_DIR="${MODEL_DIR:-/storage}" # Where to save models (large files)
 
+DATA_DIR="${DATA_DIR:-data}" # Where to save benchmark results and other data
 UPLOAD_RESULTS="${UPLOAD_RESULTS:-false}"  # Set to true to upload results to github automatically
 RUN_HYPERPARAMETER_SEARCH="${RUN_HYPERPARAMETER_SEARCH:-false}"  # Set to true to run hyperparameter search
 UPLOAD_URL="${UPLOAD_URL:-https://sssd-result-receiver-327304000081.europe-west1.run.app}"
@@ -14,26 +15,26 @@ HPARAM_LOGLEVEL="${HPARAM_LOGLEVEL:-WARNING}"  # Set to DEBUG or INFO to see mor
 start=$SECONDS
 
 if [ "${UPLOAD_RESULTS}" = "true" ] && [ -z "${RESULT_REPO_URL}"]; then
-  echo "Error: RESULT_REPO_URL must be defined when UPLOAD_RESULTS is true. It should have the shape https://github.com/<owner>/<repository>/issues"
+  echo "Error: RESULT_REPO_URL must be defined when UPLOAD_RESULTS is true. It should have the shape https://api.github.com/repos/<owner>/<repository>/issues"
   exit 1
 fi
 
 echo "Getting user machine specs..."
-python3 speculative_bench_scripts/collect_env.py
+python3 speculative_bench_scripts/collect_env.py --out-dir "$DATA_DIR"
 
 echo "Downloading models..."
 ./speculative_bench_scripts/download_models.sh
 
 echo "Converting EAGLE heads to BF16..."
-EAGLE2_LLAMA_3_1_8B_PATH=${DATA_DIR}/datasets/huggingface/models/jamesliu1/sglang-EAGLE-Llama-3.1-Instruct-8B
-EAGLE3_LLAMA_3_1_8B_PATH=${DATA_DIR}/datasets/huggingface/models/jamesliu1/sglang-EAGLE3-Llama-3.1-Instruct-8B
+EAGLE2_LLAMA_3_1_8B_PATH=${MODEL_DIR}/datasets/huggingface/models/jamesliu1/sglang-EAGLE-Llama-3.1-Instruct-8B
+EAGLE3_LLAMA_3_1_8B_PATH=${MODEL_DIR}/datasets/huggingface/models/jamesliu1/sglang-EAGLE3-Llama-3.1-Instruct-8B
 python3 speculative_bench_scripts/change_model_type.py --model $EAGLE2_LLAMA_3_1_8B_PATH
 python3 speculative_bench_scripts/change_model_type.py --model $EAGLE3_LLAMA_3_1_8B_PATH
 
 
 echo "Creating SSSD datastores..."
-LLAMA3_1_8B_PATH=$DATA_DIR/datasets/huggingface/models/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/ 
-MAGPIE_DATASTORE_IDX_PATH=$DATA_DIR/datasets/sssd_speculator/ultrachat_magpie_llama3.1-MT-500.idx
+LLAMA3_1_8B_PATH=$MODEL_DIR/datasets/huggingface/models/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/ 
+MAGPIE_DATASTORE_IDX_PATH=$MODEL_DIR/datasets/sssd_speculator/ultrachat_magpie_llama3.1-MT-500.idx
 
 python3 sssd_speculator/datastore_creation/create_datastore.py --model $LLAMA3_1_8B_PATH --index_file_path $MAGPIE_DATASTORE_IDX_PATH --mode sharegpt_ultrachat_magpie_responses
 
@@ -67,12 +68,12 @@ if [ "$RUN_HYPERPARAMETER_SEARCH" = "true" ]; then
   python3 speculative_bench_scripts/hyperparameter_search.py $COMMON_ARGS \
       --speculative-algorithm EAGLE3 \
       --speculative-draft-model-path $EAGLE3_LLAMA_3_1_8B_PATH \
-      --hparam-output-dir "data/hyperparameter_search/$HPARAM_BENCHMARK"
+      --hparam-output-dir "$DATA_DIR/hyperparameter_search/$HPARAM_BENCHMARK"
 
   python3 speculative_bench_scripts/hyperparameter_search.py $COMMON_ARGS \
       --speculative-algorithm SSSD \
       --speculative-draft-model-path $MAGPIE_DATASTORE_IDX_PATH \
-      --hparam-output-dir "data/hyperparameter_search/$HPARAM_BENCHMARK"
+      --hparam-output-dir "$DATA_DIR/hyperparameter_search/$HPARAM_BENCHMARK"
 else
   echo "Skipping hyperparameter search because RUN_HYPERPARAMETER_SEARCH is not set to 'true'."
 fi
@@ -81,7 +82,7 @@ echo "Running benchmarks..."
 BATCH_SIZES=(1 4 8 16 32 48 64)
 OUTPUT_LEN=1024
 BENCHMARK="mt-bench"
-EVAL_DATA_DIR="data/evaluation/$BENCHMARK"
+EVAL_DATA_DIR="$DATA_DIR/evaluation/$BENCHMARK"
 mkdir -p $EVAL_DATA_DIR
 
 
@@ -110,7 +111,7 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
 
 
     echo "Running EAGLE3 (optimised parameters) on $BENCHMARK for batch size ${BATCH_SIZE}"
-        HPARAM_FILE="data/hyperparameter_search/$HPARAM_BENCHMARK/EAGLE3_${BATCH_SIZE}_results.json"
+        HPARAM_FILE="$DATA_DIR/hyperparameter_search/$HPARAM_BENCHMARK/EAGLE3_${BATCH_SIZE}_results.json"
     if [ ! -f $HPARAM_FILE ]; then
         echo "Skipping batch size $BATCH_SIZE: file $HPARAM_FILE does not exist"
         continue
@@ -130,7 +131,7 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
 
     
     echo "Running SSSD (optimised parameters) on $BENCHMARK for batch size ${BATCH_SIZE}"
-        HPARAM_FILE="data/hyperparameter_search/$HPARAM_BENCHMARK/SSSD_${BATCH_SIZE}_results.json"
+        HPARAM_FILE="$DATA_DIR/hyperparameter_search/$HPARAM_BENCHMARK/SSSD_${BATCH_SIZE}_results.json"
     if [ ! -f $HPARAM_FILE ]; then
         echo "Skipping batch size $BATCH_SIZE: file $HPARAM_FILE does not exist"
         continue
@@ -152,10 +153,10 @@ done
 
 # Collect results
 echo "Gathering Results..."
-python3 speculative_bench_scripts/collect_results.py --submission-url "$UPLOAD_URL"
+python3 speculative_bench_scripts/collect_results.py --submission-url "$RESULT_REPO_URL" --data-path "$DATA_DIR"
 
 # Upload results
-RESULTS_FILE="data/collected_results.json"
+RESULTS_FILE="$DATA_DIR/collected_results.json"
 if [ "$UPLOAD_RESULTS" = "true" ]; then
 
   # Check if the results file actually exists before trying to upload

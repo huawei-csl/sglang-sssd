@@ -31,6 +31,7 @@ RUN python3 -m pip install -e . --config-settings editable_mode=compat
 WORKDIR /workspace/sglang/
 
 ENV DATA_DIR=data
+ENV MODEL_DIR=models
 
 # Add healthcheck that monitors for completion
 # This causes the container to exit if the benchmark has already been run

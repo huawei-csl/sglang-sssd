@@ -166,4 +166,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     server_args = ServerArgs.from_cli_args(args)
     bench_args = BenchArgs.from_cli_args(args)
+
+    # SGLang tends to overallocate the KVCache, leading to occasional CUDA OOM errors
+    server_args.mem_fraction_static *= 0.95
+
     main(server_args, bench_args, args)

@@ -16,6 +16,7 @@ import sys
 from collections import namedtuple
 from typing import cast as _cast
 from sglang.utils import save_json
+import argparse
 
 
 try:
@@ -591,8 +592,17 @@ def get_env_info():
         system_ram=get_system_ram(run_lambda),
     )
 
+def parse_args() -> dict:
+    parser = argparse.ArgumentParser(description="Collect environment information.")
+    parser.add_argument(
+        "--out-dir",
+        type=str,
+        help="Dir to save the collected environment information as a JSON file.",
+    )
+    return vars(parser.parse_args())
 
 def main():
+    config = parse_args()
     print("Collecting environment information...")
     env_info = get_env_info()
 
@@ -642,8 +652,8 @@ def main():
 
     # Print the dictionary as a JSON object
     print(json.dumps(output_dict, indent=4))
-    os.makedirs("data", exist_ok=True)
-    save_json("data/machine_specs.json", output_dict)
+    os.makedirs(config['out_dir'], exist_ok=True)
+    save_json(f"{config['out_dir']}/machine_specs.json", output_dict)
 
 
 if __name__ == "__main__":
