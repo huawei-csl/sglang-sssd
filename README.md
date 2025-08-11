@@ -18,8 +18,10 @@ docker run --rm --gpus all nvidia/cuda:12.0.1-runtime-ubuntu22.04 nvidia-smi
 ```
 Note: if you plan to run the built image on a cloud instance, GPUs are usually already provided to the Docker container, so this step can be skipped.
 
-3. Once docker is functioning, clone this repository (with `--recurse-submodules`) and run the following from the root:
+3. Once docker is functioning, clone this repository and run the build script from the root:
 ```
+git clone --recurse-submodules --branch add_sssd git@github.com:michelemarzollo/sglang-sssd.git
+cd sglang-sssd
 bash ./speculative_bench_scripts/build_docker.sh
 ```
 
@@ -34,8 +36,13 @@ Otherwise you will want to tag the docker image and push it to a registry (e.g `
 
 **Note**: This route has only been tested for Ubuntu 22.04. For other sytems, you may need to install additional dependencies.
 1. Ensure [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html) is installed, although it is also fine to use `miniconda`.
-2. Clone this repository (with `--recurse-submodules`) and run `bash ./speculative_bench_scripts/sssd_install.sh` to create the conda environment and install dependencies.
-3. Activate the conda environment and then:
+2. Clone this repository and run the conda installation script:
+```
+git clone --recurse-submodules --branch add_sssd git@github.com:michelemarzollo/sglang-sssd.git
+cd sglang-sssd
+bash ./speculative_bench_scripts/sssd_install.sh
+```
+4. Activate the conda environment and then:
 ```
 export HF_TOKEN=<your_token>
 export MODEL_DIR=<place_to_download_models_to>
@@ -44,6 +51,7 @@ bash ./speculative_bench_scripts/run_e2e.sh
 
 ### Extras
 When running the benchmarks you can also:
+- `export DATA_DIR=<results_directory>` to set where benchmark results should be saved to.
 - `export RUN_HYPERPARAMETER_SEARCH=true` to run a hyper-parameter search on both EAGLE3 and SSSD for better results. This additional step will take 4-12 hours depending on the machine.
 - `export UPLOAD_RESULTS=true` to upload the results to this repository's issues. Otherwise they will be printed at the end of the benchmark run and saved to `data/collected_results.json`. Additionally also set `export RESULT_REPO_URL=https://api.github.com/repos/<owner>/<repository>/issues` to point to the repository where the results should be uploaded.
 
