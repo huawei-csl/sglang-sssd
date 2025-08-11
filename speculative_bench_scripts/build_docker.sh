@@ -10,3 +10,5 @@ docker build \
   --build-arg CUDA_VERSION="${CUDA}" \
   -t "${IMAGE}" \
   .
+
+echo "Docker image '${IMAGE}' built successfully."

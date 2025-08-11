@@ -25,11 +25,12 @@ conda activate "$ENV_NAME"
 
 # Install CUDA toolkit for SGLang
 conda install -y -c nvidia -c conda-forge cuda-toolkit=12.6.3
+# Install ninja for flashinfer (dependency for SGLang)
+conda install -y -c conda-forge gcc=12.1.0 ninja
 # Install SGLang
 python3 -m pip install -e "python[all]"
 
 conda install -y cmake
-conda install -y -c conda-forge gcc=12.1.0
 
 # Purge any existing SSSD installation
 (cd sssd_speculator && pip uninstall sssd_speculator -y && rm -rf build/ && rm -rf *.egg-info/ && rm -rf dist/ && rm -f sssd_speculator/*.so)

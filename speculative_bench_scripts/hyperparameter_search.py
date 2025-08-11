@@ -61,9 +61,14 @@ def objective(
         )
 
     # 2. Handle constraints by pruning invalid trials.
-    if params["speculative_num_steps"] > params["speculative_num_draft_tokens"]:
+    if params["speculative_num_steps"] >= params["speculative_num_draft_tokens"]:
         raise optuna.exceptions.TrialPruned(
-            f"Pruning trial: speculative_num_steps cannot be greater than speculative_num_draft_tokens. Params: {params}"
+            f"Pruning trial: speculative_num_steps cannot be >= speculative_num_draft_tokens. Params: {params}"
+        )
+
+    if params["speculative_eagle_topk"] >= params["speculative_num_draft_tokens"]:
+        raise optuna.exceptions.TrialPruned(
+            f"Pruning trial: speculative_eagle_topk cannot be >= than speculative_num_draft_tokens. Params: {params}"
         )
 
     if params["speculative_num_draft_tokens"] * batch_size > max_draft_tokens_in_batch:
@@ -351,6 +356,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     server_args = ServerArgs.from_cli_args(args)
     bench_args = BenchArgs.from_cli_args(args)
+
+    # SGLang tends to overallocate the KVCache, leading to occasional CUDA OOM errors
+    server_args.mem_fraction_static *= 0.95
+
 
     run_hyperparameter_search(
         server_args,

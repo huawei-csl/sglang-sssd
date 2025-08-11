@@ -38,14 +38,14 @@ Otherwise you will want to tag the docker image and push it to a registry (e.g `
 3. Activate the conda environment and then:
 ```
 export HF_TOKEN=<your_token>
-export DATA_DIR=<place_to_download_models_to>
+export MODEL_DIR=<place_to_download_models_to>
 bash ./speculative_bench_scripts/run_e2e.sh
 ```
 
 ### Extras
 When running the benchmarks you can also:
 - `export RUN_HYPERPARAMETER_SEARCH=true` to run a hyper-parameter search on both EAGLE3 and SSSD for better results. This additional step will take 4-12 hours depending on the machine.
-- `export UPLOAD_RESULTS=true` to upload the results to this repository's issues. Otherwise they will be printed at the end of the benchmark run and saved to `data/collected_results.json`. Additionally also set `export RESULT_REPO_URL=https://github.com/<owner>/<repository>/issues` to point to the repository where the results should be uploaded.
+- `export UPLOAD_RESULTS=true` to upload the results to this repository's issues. Otherwise they will be printed at the end of the benchmark run and saved to `data/collected_results.json`. Additionally also set `export RESULT_REPO_URL=https://api.github.com/repos/<owner>/<repository>/issues` to point to the repository where the results should be uploaded.
 
 ## Results
 If you chose to set `export RUN_HYPERPARAMETER_SEARCH=true` the results will be uploaded automatically to the issues of this repository with a URL provided at the end. The results contain:

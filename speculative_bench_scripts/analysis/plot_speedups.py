@@ -46,7 +46,7 @@ def construct_result_df(data: dict, only_batch_sizes: list | None = None, baseli
     return pd.DataFrame(out_dict), benchmark_name
 
 
-def plot_speedups(df: pd.DataFrame, benchmark_name: str):
+def plot_speedups(df: pd.DataFrame, benchmark_name: str, out_dir: str):
     # Set the style and context for the plot
     sns.set_style("whitegrid")
     sns.set_context("talk")
@@ -83,7 +83,6 @@ def plot_speedups(df: pd.DataFrame, benchmark_name: str):
     # Adjust layout to prevent labels from being cut off
     plt.tight_layout(rect=[0, 0.1, 1, 1])
 
-    out_dir = "data/analysis"
     os.makedirs(out_dir, exist_ok=True)
 
     # Display the plot
@@ -91,7 +90,10 @@ def plot_speedups(df: pd.DataFrame, benchmark_name: str):
 
 
 if __name__ == "__main__":
-    data = read_json("data/collected_results.json")
+    # Change as needed
+    result_path = "data/extra_results/h100_collected_results.json"
+    out_dir = "data/analysis/h100"
+    data = read_json(result_path)
     df, benchmark_name = construct_result_df(data, only_batch_sizes=[1, 8, 32, 64])
-    plot_speedups(df, benchmark_name)
+    plot_speedups(df, benchmark_name, out_dir)
     print("Speedup plot saved successfully.")

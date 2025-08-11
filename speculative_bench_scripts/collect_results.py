@@ -73,6 +73,11 @@ def parse_args() -> dict:
         type=str,
         help="The URL to submit the results to.",
     )
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        help="Path to the directory containing the data files.",
+    )
     args = parser.parse_args()
     return vars(args)
 
@@ -81,14 +86,15 @@ def gather_results():
     args = parse_args()
     benchmark = args["eval_benchmark"]
     hparam_benchmark = args["hparam_benchmark"]
+    data_path = args["data_path"]
 
     # evaluation results
-    eval_results, eval_filenames = read_all_json_files(f"data/evaluation/{benchmark}", get_name_and_batch_size)
+    eval_results, eval_filenames = read_all_json_files(f"{data_path}/evaluation/{benchmark}", get_name_and_batch_size)
     results_dict["evaluation"] = {}
     results_dict["evaluation"][benchmark] = process_evaluation_results(eval_results, eval_filenames)
     
     # hyperparameters
-    hyperparam_results, _ = read_all_json_files(f"data/hyperparameter_search/{hparam_benchmark}", get_name_and_batch_size)
+    hyperparam_results, _ = read_all_json_files(f"{data_path}/hyperparameter_search/{hparam_benchmark}", get_name_and_batch_size)
     hyperparam_d = {}
     for r in hyperparam_results:
         alg = r.pop("algorithm")
@@ -100,12 +106,12 @@ def gather_results():
     results_dict["hyperparameter_search"][hparam_benchmark] = hyperparam_d
 
     # machine specs
-    results_dict["machine_specs"] = read_json("data/machine_specs.json"),
+    results_dict["machine_specs"] = read_json(f"{data_path}/machine_specs.json"),
 
     # saving
     results_dict["submission_timestamp"] = get_timestamp_str()
     results_dict["submission_url"] = args["submission_url"]
-    output_path = 'data/collected_results.json'
+    output_path = f'{data_path}/collected_results.json'
     save_json(output_path, results_dict, sort_keys=False)
     print(f"All Results saved to {output_path}.")
 

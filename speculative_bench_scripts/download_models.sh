@@ -21,13 +21,13 @@ echo "✅ Login successful:"
 hf auth whoami || true
 
 # 3. Model definitions: "repo_id commit target_dir"
-#   "meta-llama/Meta-Llama-3-8B-Instruct 5f0b02c75b57c5855da9ae460ce51323ea669d8a ${DATA_DIR}/datasets/huggingface/models/models--meta-llama--Meta-Llama-3-8B-Instruct/snapshots/5f0b02c75b57c5855da9ae460ce51323ea669d8a"
+#   "meta-llama/Meta-Llama-3-8B-Instruct 5f0b02c75b57c5855da9ae460ce51323ea669d8a ${MODEL_DIR}/datasets/huggingface/models/models--meta-llama--Meta-Llama-3-8B-Instruct/snapshots/5f0b02c75b57c5855da9ae460ce51323ea669d8a"
 models=(
-  "meta-llama/Meta-Llama-3.1-8B-Instruct 0e9e39f249a16976918f6564b8830bc894c89659 ${DATA_DIR}/datasets/huggingface/models/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659"
-  "jamesliu1/sglang-EAGLE-Llama-3.1-Instruct-8B main ${DATA_DIR}/datasets/huggingface/models/jamesliu1/sglang-EAGLE-Llama-3.1-Instruct-8B"
-  "jamesliu1/sglang-EAGLE3-Llama-3.1-Instruct-8B main ${DATA_DIR}/datasets/huggingface/models/jamesliu1/sglang-EAGLE3-Llama-3.1-Instruct-8B"  
-  # "yuhuili/EAGLE-LLaMA3.1-Instruct-8B main ${DATA_DIR}/datasets/huggingface/models/yuhuili/EAGLE-LLaMA3.1-Instruct-8B"
-  # "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B main ${DATA_DIR}/datasets/huggingface/models/yuhuili/EAGLE3-LLaMA3.1-Instruct-8B"
+  "meta-llama/Meta-Llama-3.1-8B-Instruct 0e9e39f249a16976918f6564b8830bc894c89659 ${MODEL_DIR}/datasets/huggingface/models/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659"
+  "jamesliu1/sglang-EAGLE-Llama-3.1-Instruct-8B main ${MODEL_DIR}/datasets/huggingface/models/jamesliu1/sglang-EAGLE-Llama-3.1-Instruct-8B"
+  "jamesliu1/sglang-EAGLE3-Llama-3.1-Instruct-8B main ${MODEL_DIR}/datasets/huggingface/models/jamesliu1/sglang-EAGLE3-Llama-3.1-Instruct-8B"  
+  # "yuhuili/EAGLE-LLaMA3.1-Instruct-8B main ${MODEL_DIR}/datasets/huggingface/models/yuhuili/EAGLE-LLaMA3.1-Instruct-8B"
+  # "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B main ${MODEL_DIR}/datasets/huggingface/models/yuhuili/EAGLE3-LLaMA3.1-Instruct-8B"
 )
 
 # 4. Loop through and download
