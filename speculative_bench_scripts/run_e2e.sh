@@ -2,6 +2,8 @@
 # Downloads models, creates SSSD datastores, and runs benchmarks
 set -e
 
+export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
+
 export MODEL_DIR="${MODEL_DIR:-/storage}" # Where to save models (large files)
 
 DATA_DIR="${DATA_DIR:-data}" # Where to save benchmark results and other data
@@ -34,25 +36,13 @@ python3 speculative_bench_scripts/change_model_type.py --model $EAGLE3_LLAMA_3_1
 
 echo "Creating SSSD datastores..."
 LLAMA3_1_8B_PATH=$MODEL_DIR/datasets/huggingface/models/models--meta-llama--Meta-Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/ 
-MAGPIE_DATASTORE_IDX_PATH=$MODEL_DIR/datasets/sssd_speculator/ultrachat_magpie_llama3.1-MT-500.idx
+MAGPIE_DATASTORE_IDX_PATH=$MODEL_DIR/datasets/sssd_speculator/hitz-magpie-llama3.1-8B_magpie-llama-3.1-MT-500.idx
 
-python3 sssd_speculator/datastore_creation/create_datastore.py --model $LLAMA3_1_8B_PATH --index_file_path $MAGPIE_DATASTORE_IDX_PATH --mode sharegpt_ultrachat_magpie_responses
+python3 sssd_speculator/datastore_creation/create_datastore.py --model $LLAMA3_1_8B_PATH --index_file_path $MAGPIE_DATASTORE_IDX_PATH --datasets hitz-magpie-llama3.1-8b magpie-llama31-pro
 
 HPARAM_BENCHMARK="sharegpt"
 if [ "$RUN_HYPERPARAMETER_SEARCH" = "true" ]; then
   echo "Hyperparameter search..."
-# FIXME EAGLE2 seems to get "RuntimeError: CUDA error: an illegal memory access was encountered"
-# It's not an important result, so skipped in the interest of time
-# For some reason EAGLE2 is often just called "EAGLE" by the community
-# python3 speculative_bench_scripts/hyperparameter_search.py --model $LLAMA3_1_8B_PATH  \
-#     --speculative-algorithm EAGLE \
-#     --dataset-name "sharegpt" \
-#     --speculative-draft-model-path $EAGLE2_LLAMA_3_1_8B_PATH \
-#     --sharegpt-output-len 256 \
-#     --disable-ignore-eos \
-#     --apply-chat-template \
-#     --enable-metrics \
-#     --num-successful-trials 10
 
   COMMON_ARGS="--model $LLAMA3_1_8B_PATH \
       --dataset-name $HPARAM_BENCHMARK \
@@ -70,10 +60,6 @@ if [ "$RUN_HYPERPARAMETER_SEARCH" = "true" ]; then
       --speculative-draft-model-path $EAGLE3_LLAMA_3_1_8B_PATH \
       --hparam-output-dir "$DATA_DIR/hyperparameter_search/$HPARAM_BENCHMARK"
 
-  python3 speculative_bench_scripts/hyperparameter_search.py $COMMON_ARGS \
-      --speculative-algorithm SSSD \
-      --speculative-draft-model-path $MAGPIE_DATASTORE_IDX_PATH \
-      --hparam-output-dir "$DATA_DIR/hyperparameter_search/$HPARAM_BENCHMARK"
 else
   echo "Skipping hyperparameter search because RUN_HYPERPARAMETER_SEARCH is not set to 'true'."
 fi
@@ -102,6 +88,11 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
     python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
         --result-filename "$EVAL_DATA_DIR/Autoregressive_$BATCH_SIZE.json"
 
+    echo "Running EAGLE2 (default parameters) on $BENCHMARK for batch size ${BATCH_SIZE}"
+    python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
+        --speculative-algorithm EAGLE \
+        --speculative-draft-model-path $EAGLE2_LLAMA_3_1_8B_PATH \
+        --result-filename "$EVAL_DATA_DIR/EAGLE2-default_$BATCH_SIZE.json"
 
     echo "Running EAGLE3 (default parameters) on $BENCHMARK for batch size ${BATCH_SIZE}"
     python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
@@ -109,46 +100,41 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
         --speculative-draft-model-path $EAGLE3_LLAMA_3_1_8B_PATH \
         --result-filename "$EVAL_DATA_DIR/EAGLE3-default_$BATCH_SIZE.json"
 
+    if [ "$RUN_HYPERPARAMETER_SEARCH" = "true" ]; then
+      echo "Running EAGLE3 (optimised parameters) on $BENCHMARK for batch size ${BATCH_SIZE}"
+          HPARAM_FILE="$DATA_DIR/hyperparameter_search/$HPARAM_BENCHMARK/EAGLE3_${BATCH_SIZE}_results.json"
+      if [ ! -f $HPARAM_FILE ]; then
+          echo "Skipping batch size $BATCH_SIZE: file $HPARAM_FILE does not exist"
+          continue
+      fi
+      python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
+          --speculative-algorithm EAGLE3 \
+          --speculative-draft-model-path $EAGLE3_LLAMA_3_1_8B_PATH \
+          --result-filename "$EVAL_DATA_DIR/EAGLE3-optimised_$BATCH_SIZE.json" \
+          --hparam-file "$HPARAM_FILE"
 
-    echo "Running EAGLE3 (optimised parameters) on $BENCHMARK for batch size ${BATCH_SIZE}"
-        HPARAM_FILE="$DATA_DIR/hyperparameter_search/$HPARAM_BENCHMARK/EAGLE3_${BATCH_SIZE}_results.json"
-    if [ ! -f $HPARAM_FILE ]; then
-        echo "Skipping batch size $BATCH_SIZE: file $HPARAM_FILE does not exist"
-        continue
+      # Use the same parameters for EAGLE2, the search takes too long and won't make much difference
+      echo "Running EAGLE2 (optimised parameters) on $BENCHMARK for batch size ${BATCH_SIZE}"
+          HPARAM_FILE="$DATA_DIR/hyperparameter_search/$HPARAM_BENCHMARK/EAGLE3_${BATCH_SIZE}_results.json"
+      if [ ! -f $HPARAM_FILE ]; then
+          echo "Skipping batch size $BATCH_SIZE: file $HPARAM_FILE does not exist"
+          continue
+      fi
+      python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
+          --speculative-algorithm EAGLE \
+          --speculative-draft-model-path $EAGLE2_LLAMA_3_1_8B_PATH \
+          --result-filename "$EVAL_DATA_DIR/EAGLE2-optimised_$BATCH_SIZE.json" \
+          --hparam-file "$HPARAM_FILE"
     fi
-    python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
-        --speculative-algorithm EAGLE3 \
-        --speculative-draft-model-path $EAGLE3_LLAMA_3_1_8B_PATH \
-        --result-filename "$EVAL_DATA_DIR/EAGLE3-optimised_$BATCH_SIZE.json" \
-        --hparam-file "$HPARAM_FILE"
-    
 
-    echo "Running SSSD (default parameters) on $BENCHMARK for batch size ${BATCH_SIZE}"
+    echo "Running SSSD on $BENCHMARK for batch size: ${BATCH_SIZE}"
     python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
         --speculative-algorithm SSSD \
         --speculative-draft-model-path $MAGPIE_DATASTORE_IDX_PATH \
-        --result-filename "$EVAL_DATA_DIR/SSSD-default_$BATCH_SIZE.json"
-
-    
-    echo "Running SSSD (optimised parameters) on $BENCHMARK for batch size ${BATCH_SIZE}"
-        HPARAM_FILE="$DATA_DIR/hyperparameter_search/$HPARAM_BENCHMARK/SSSD_${BATCH_SIZE}_results.json"
-    if [ ! -f $HPARAM_FILE ]; then
-        echo "Skipping batch size $BATCH_SIZE: file $HPARAM_FILE does not exist"
-        continue
-    fi
-    python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
-        --speculative-algorithm SSSD \
-        --speculative-draft-model-path $MAGPIE_DATASTORE_IDX_PATH \
-        --result-filename "$EVAL_DATA_DIR/SSSD-optimised_$BATCH_SIZE.json" \
-        --hparam-file "$HPARAM_FILE"
-
-
-    echo "Running SSSD (Michele parameters) on $BENCHMARK for batch size: ${BATCH_SIZE}"
-    python3 speculative_bench_scripts/eval_benchmark.py $COMMON_ARGS \
-        --speculative-algorithm SSSD \
-        --speculative-draft-model-path $MAGPIE_DATASTORE_IDX_PATH \
-        --result-filename "$EVAL_DATA_DIR/SSSD-manual_$BATCH_SIZE.json" \
-        --use-hparam-mapping
+        --speculative-adaptive \
+        --result-filename "$EVAL_DATA_DIR/SSSD_$BATCH_SIZE.json"
+        # Remove --speculative-adaptive and use --use-hparam-mapping if you want to use some decent defaults
+        # without dynamicity
 done
 
 # Collect results

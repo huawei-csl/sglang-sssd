@@ -60,6 +60,8 @@ from sglang.srt.utils import (
     require_mlp_sync,
     require_mlp_tp_gather,
 )
+from sglang.srt.speculative.sssd_utils import POSSIBLE_SPEC_LENS, \
+    get_compute_bw_ratio, get_max_speclen_per_bs, default_branch_func
 
 logger = logging.getLogger(__name__)
 
@@ -266,20 +268,37 @@ class CudaGraphRunner:
         self.attn_tp_size = get_attention_tp_size()
         self.attn_tp_rank = get_attention_tp_rank()
 
+        # Variable speculation length
+        self.speculative_adaptive = self.model_runner.server_args.speculative_adaptive
+
         # Batch sizes to capture
         self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(model_runner)
         log_info_on_rank0(logger, f"Capture cuda graph bs {self.capture_bs}")
         self.capture_forward_mode = ForwardMode.DECODE
         self.capture_hidden_mode = CaptureHiddenMode.NULL
         self.num_tokens_per_bs = 1
+        self.num_tokens_per_bs_map = {}
         if model_runner.spec_algorithm.is_speculative():
             if self.model_runner.is_draft_worker:
                 raise RuntimeError("This should not happen")
             else:
                 self.capture_forward_mode = ForwardMode.TARGET_VERIFY
-                self.num_tokens_per_bs = (
-                    self.model_runner.server_args.speculative_num_draft_tokens
-                )
+                if not self.speculative_adaptive:
+                    self.num_tokens_per_bs = (
+                        self.model_runner.server_args.speculative_num_draft_tokens
+                    )
+                else:
+                    compute_bw_ratio = int(get_compute_bw_ratio())
+                    # Make it a nice multiple of 16 for operator efficiency
+                    possible_multiples_of_16 = [16 * val for val in [1, 2, 3, 4, 6, 8, 10, 12, 16, 24]]
+                    index = bisect.bisect_right(possible_multiples_of_16, compute_bw_ratio)
+                    compute_bw_ratio = possible_multiples_of_16[index-1] if index > 0 else 1
+
+                    for bs in self.capture_bs:
+                        max_spec_len = min(compute_bw_ratio // bs, get_max_speclen_per_bs(bs))
+                        index = bisect.bisect_right(POSSIBLE_SPEC_LENS, max_spec_len)
+                        num_toks = POSSIBLE_SPEC_LENS[index - 1] if index > 0 else 1
+                        self.num_tokens_per_bs_map[bs] = num_toks
 
         # If returning hidden states is enabled, set initial capture hidden mode to full to avoid double-capture on startup
         if model_runner.server_args.enable_return_hidden_states:
@@ -287,7 +306,11 @@ class CudaGraphRunner:
 
         # Attention backend
         self.max_bs = max(self.capture_bs)
-        self.max_num_token = self.max_bs * self.num_tokens_per_bs
+        if not self.speculative_adaptive:
+            self.max_num_token = self.max_bs * self.num_tokens_per_bs
+        else:
+            self.max_num_token = max(bs * nt for bs, nt in self.num_tokens_per_bs_map.items())
+
         self.model_runner.attn_backend.init_cuda_graph_state(
             self.max_bs, self.max_num_token
         )
@@ -364,15 +387,17 @@ class CudaGraphRunner:
             else:
                 self.global_num_tokens_gpu = None
                 self.global_num_tokens_for_logprob_gpu = None
+            
+            if not self.speculative_adaptive:
+                self.custom_mask = torch.ones(
+                    (
+                        (self.seq_lens.sum().item() + self.max_num_token)
+                        * self.num_tokens_per_bs
+                    ),
+                    dtype=torch.bool,
+                    device=self.device,
+                )
 
-            self.custom_mask = torch.ones(
-                (
-                    (self.seq_lens.sum().item() + self.max_num_token)
-                    * self.num_tokens_per_bs
-                ),
-                dtype=torch.bool,
-                device=self.device,
-            )
             self.next_token_logits_buffer = torch.zeros(
                 (self.max_num_token, self.model_runner.model_config.vocab_size),
                 dtype=torch.float,
@@ -393,8 +418,17 @@ class CudaGraphRunner:
 
     def can_run(self, forward_batch: ForwardBatch):
         if self.require_mlp_tp_gather:
+            if not self.speculative_adaptive:
+                num_toks_per_bs = self.num_tokens_per_bs
+            else:
+                # TODO: not sure this is correct, not tested
+                index = bisect.bisect_left(self.capture_bs, forward_batch.batch_size)
+                if index >= len(self.capture_bs):
+                    return False
+                pad_bs = self.capture_bs[index]
+                num_toks_per_bs = self.num_tokens_per_bs_map[pad_bs]
             cuda_graph_bs = (
-                max(forward_batch.global_num_tokens_cpu) // self.num_tokens_per_bs
+                max(forward_batch.global_num_tokens_cpu) // num_toks_per_bs
                 if self.model_runner.spec_algorithm.is_speculative()
                 else max(forward_batch.global_num_tokens_cpu)
             )
@@ -480,11 +514,14 @@ class CudaGraphRunner:
                         capture_range.set_description(
                             f"Capturing batches ({bs=} {avail_mem=:.2f} GB)"
                         )
-
+                    if not self.speculative_adaptive:
+                        num_toks_per_bs = self.num_tokens_per_bs
+                    else:
+                        num_toks_per_bs = self.num_tokens_per_bs_map[bs]
                     with patch_model(
                         self.model_runner.model,
                         bs in self.compile_bs,
-                        num_tokens=bs * self.num_tokens_per_bs,
+                        num_tokens=bs * num_toks_per_bs,
                         tp_group=self.model_runner.tp_group,
                     ) as forward:
                         (
@@ -521,8 +558,13 @@ class CudaGraphRunner:
     def capture_one_batch_size(self, bs: int, forward: Callable):
         graph = self._create_device_graph()
         stream = self.stream
-        num_tokens = bs * self.num_tokens_per_bs
+        if not self.speculative_adaptive:
+            num_toks_per_bs = self.num_tokens_per_bs
+        else:
+            num_toks_per_bs = self.num_tokens_per_bs_map[bs]
+        num_tokens = bs * num_toks_per_bs
 
+        print(f"Capturing graph: bs: {bs}, toks_per_bs: {num_toks_per_bs}")
         # Graph inputs
         input_ids = self.input_ids[:num_tokens]
         req_pool_indices = self.req_pool_indices[:bs]
@@ -578,7 +620,7 @@ class CudaGraphRunner:
         else:
             global_dp_buffer_len = None
 
-        spec_info = self.get_spec_info(num_tokens)
+        spec_info = self.get_spec_info(num_toks_per_bs)
         if self.capture_hidden_mode != CaptureHiddenMode.FULL:
             self.capture_hidden_mode = (
                 spec_info.capture_hidden_mode if spec_info else CaptureHiddenMode.NULL
@@ -712,13 +754,19 @@ class CudaGraphRunner:
         self.recapture_if_needed(forward_batch)
 
         raw_bs = forward_batch.batch_size
-        raw_num_token = raw_bs * self.num_tokens_per_bs
+        if not self.speculative_adaptive:
+            num_toks_per_bs = self.num_tokens_per_bs
+        else:
+            index = bisect.bisect_left(self.capture_bs, raw_bs)
+            pad_bs = self.capture_bs[index]
+            num_toks_per_bs = self.num_tokens_per_bs_map[pad_bs]
+        raw_num_token = raw_bs * num_toks_per_bs
 
         # Pad
         if self.require_mlp_tp_gather:
             max_num_tokens = max(forward_batch.global_num_tokens_cpu)
             max_batch_size = (
-                max_num_tokens / self.num_tokens_per_bs
+                max_num_tokens / num_toks_per_bs
                 if self.model_runner.spec_algorithm.is_speculative()
                 else max_num_tokens
             )
@@ -754,8 +802,8 @@ class CudaGraphRunner:
         if forward_batch.mrope_positions is not None:
             self.mrope_positions[:, :raw_bs].copy_(forward_batch.mrope_positions)
         if self.require_gathered_buffer:
-            self.global_num_tokens_gpu.fill_(bs * self.num_tokens_per_bs)
-            self.global_num_tokens_for_logprob_gpu.fill_(bs * self.num_tokens_per_bs)
+            self.global_num_tokens_gpu.fill_(bs * num_toks_per_bs)
+            self.global_num_tokens_for_logprob_gpu.fill_(bs * num_toks_per_bs)
         if enable_num_token_non_padded(self.model_runner.server_args):
             num_token_non_padded = forward_batch.num_token_non_padded
             if self.require_gathered_buffer:
@@ -776,7 +824,11 @@ class CudaGraphRunner:
                 spec_info=forward_batch.spec_info,
             )
         if forward_batch.forward_mode.is_idle() and forward_batch.spec_info is not None:
-            forward_batch.spec_info.custom_mask = self.custom_mask
+            if not self.speculative_adaptive:
+                forward_batch.spec_info.custom_mask = self.custom_mask
+            else:
+                forward_batch = self.get_variable_speculation_mask(num_toks_per_bs)
+
         # Attention backend
         self.model_runner.attn_backend.init_forward_metadata_replay_cuda_graph(
             bs,
@@ -824,7 +876,7 @@ class CudaGraphRunner:
             assert isinstance(output, PPProxyTensors)
             return PPProxyTensors({k: v[: self.bs] for k, v in output.tensors.items()})
 
-    def get_spec_info(self, num_tokens: int):
+    def get_spec_info(self, num_speculative_tokens: int):
         spec_info = None
         if self.model_runner.spec_algorithm.is_eagle():
             from sglang.srt.speculative.eagle_utils import EagleVerifyInput
@@ -854,23 +906,51 @@ class CudaGraphRunner:
             if self.model_runner.is_draft_worker:
                 raise RuntimeError("This should not happen.")
             else:
-                spec_info = SSSDVerifyInput(
-                    draft_token=None,
-                    custom_mask=self.custom_mask,
-                    positions=None,
-                    retrive_index=None,
-                    retrive_next_token=None,
-                    retrive_next_sibling=None,
-                    retrive_cum_len=None,
-                    spec_steps=self.model_runner.server_args.speculative_num_steps,
-                    topk=self.model_runner.server_args.speculative_eagle_topk,
-                    draft_token_num=self.model_runner.server_args.speculative_num_draft_tokens,
-                    capture_hidden_mode=CaptureHiddenMode.NULL,
-                    seq_lens_sum=None,
-                    seq_lens_cpu=None,
-                )
+                if not self.speculative_adaptive:
+                    spec_info = SSSDVerifyInput(
+                        draft_token=None,
+                        custom_mask=self.custom_mask,
+                        positions=None,
+                        retrive_index=None,
+                        retrive_next_token=None,
+                        retrive_next_sibling=None,
+                        retrive_cum_len=None,
+                        spec_steps=self.model_runner.server_args.speculative_num_steps,
+                        topk=self.model_runner.server_args.speculative_eagle_topk,
+                        draft_token_num=self.model_runner.server_args.speculative_num_draft_tokens,
+                        capture_hidden_mode=CaptureHiddenMode.NULL,
+                        seq_lens_sum=None,
+                        seq_lens_cpu=None,
+                    )
+                else:
+                    branch_len, top_k = default_branch_func(num_speculative_tokens)
+                    spec_info = SSSDVerifyInput(
+                        draft_token=None,
+                        custom_mask=self.get_variable_speculation_mask(num_speculative_tokens),
+                        positions=None,
+                        retrive_index=None,
+                        retrive_next_token=None,
+                        retrive_next_sibling=None,
+                        retrive_cum_len=None,
+                        spec_steps=branch_len,
+                        topk=top_k,
+                        draft_token_num=num_speculative_tokens,
+                        capture_hidden_mode=CaptureHiddenMode.NULL,
+                        seq_lens_sum=None,
+                        seq_lens_cpu=None,
+                    )
         
         return spec_info
+    
+    def get_variable_speculation_mask(self, speculative_tokens):
+        return torch.ones(
+                (
+                    (self.seq_lens.sum().item() + self.max_num_token)
+                    * speculative_tokens
+                ),
+                dtype=torch.bool,
+                device=self.device,
+            )
 
 
 CUDA_GRAPH_CAPTURE_FAILED_MSG = (

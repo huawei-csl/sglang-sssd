@@ -42,9 +42,13 @@ class SSSDWorker:
     ):
         # Parse arguments
         self.server_args = server_args
+
+        self.adaptive_speculation = server_args.speculative_adaptive
+        # If the speculation is not adaptive, these values are fixes, otherwise they are updated at each iteration
         self.topk = server_args.speculative_eagle_topk
         self.speculative_num_steps = server_args.speculative_num_steps
         self.speculative_num_draft_tokens = server_args.speculative_num_draft_tokens
+        
         self.enable_nan_detection = server_args.enable_nan_detection
         self.gpu_id = gpu_id
         self.device = server_args.device
@@ -55,7 +59,7 @@ class SSSDWorker:
         )
         self.padded_static_len = -1
 
-        # Override context length with target model's context length
+        # Override the context length of the draft model to be the same as the target model.
         server_args.context_length = target_worker.model_runner.model_config.context_len
 
         # Share the allocator with a target worker.
@@ -63,6 +67,13 @@ class SSSDWorker:
         self.req_to_token_pool, self.token_to_kv_pool_allocator = (
             target_worker.get_memory_pool()
         )
+        # For adaptive speculation. Quite ugly way of getting this information, but the closes connection I could find.
+        # it's needed for the speculative adaptive case to know what are the real batch sizes after padding, and get
+        # the corresponding speculation length.
+        # TODO: the captured batch sizes could change (see graph_runner->recapture_if_needed). It shouldn't
+        # normally happen, and if it does the code might crash.
+        captured_batch_sizes = target_worker.model_runner.graph_runner.capture_bs
+        num_tokens_per_bs_map = target_worker.model_runner.graph_runner.num_tokens_per_bs_map
 
         # Load hot token ids
         if server_args.speculative_token_map is not None:
@@ -79,7 +90,7 @@ class SSSDWorker:
         )
         self.extend_lens = torch.empty((), dtype=torch.int64, device=self.device)
         
-        self.speculator = SSSDSpeculator(server_args, self.device)
+        self.speculator = SSSDSpeculator(server_args, self.device, captured_batch_sizes, num_tokens_per_bs_map)
 
 
     def forward_batch_speculative_generation(
@@ -112,9 +123,7 @@ class SSSDWorker:
             return logits_output, next_token_ids, bid, 0, False
         # Decode
         else:
-            # with self.draft_tp_context(self.draft_model_runner.tp_group):
             spec_info = self.draft(batch)
-
             # Verification with target model
             logits_output, verify_output, model_worker_batch, can_run_cuda_graph = (
                 self.verify(batch, spec_info)
@@ -260,6 +269,13 @@ class SSSDWorker:
         if batch.forward_mode.is_idle():
             batch.spec_info = None
         else:
+            if self.adaptive_speculation:
+                (
+                    self.speculative_num_draft_tokens,
+                    self.speculative_num_steps,
+                    self.topk
+                ) = self.speculator.get_speculate_params_adaptive(batch)
+
             self._draft_preprocess_decode(batch)
 
         (
@@ -269,8 +285,8 @@ class SSSDWorker:
             retrive_next_token,
             retrive_next_sibling,
             draft_tokens,
-        ) = self.speculator.get_draft(batch, [self.speculative_num_draft_tokens]*batch.batch_size())
-            
+        ) = self.speculator.get_draft(batch)
+
         return SSSDVerifyInput(
             draft_token=draft_tokens,
             custom_mask=tree_mask,
@@ -281,7 +297,7 @@ class SSSDWorker:
             retrive_cum_len=None,
             spec_steps=self.speculative_num_steps,
             topk=self.topk,
-            draft_token_num=self.server_args.speculative_num_draft_tokens,
+            draft_token_num=self.speculative_num_draft_tokens,
             capture_hidden_mode=CaptureHiddenMode.NULL,
             seq_lens_sum=batch.seq_lens_sum,
             seq_lens_cpu=None

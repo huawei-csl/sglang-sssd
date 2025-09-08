@@ -5,6 +5,7 @@ import logging
 import torch
 import torch.nn.functional as F
 import hashlib
+import bisect
 import sssd_speculator
 import time
 
@@ -45,6 +46,31 @@ if is_cuda():
     )
 elif is_hip():
     from sgl_kernel import verify_tree_greedy
+
+POSSIBLE_SPEC_LENS = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32]
+
+_COMPUTE_BW_RATIO = None
+
+
+def get_compute_bw_ratio():
+    global _COMPUTE_BW_RATIO
+    if _COMPUTE_BW_RATIO is None:
+        _COMPUTE_BW_RATIO = flops_to_bandwidth_ratio()
+    logger.info(f"COMPUTE BW RATIO: {_COMPUTE_BW_RATIO}")
+    return _COMPUTE_BW_RATIO
+
+
+def get_max_speclen_per_bs(bs):
+    """The roofline model does not apply well to small batch sizes, when the free budget is a lot and speculating
+    too much is not worth it. So we put some additional manual constraints obtained by experience."""
+    if bs <= 1:
+        return 32
+    if bs >=2 and bs < 4:
+        return 64 // bs
+    if bs >= 4 and bs <= 6:
+        return 96 // bs
+    # From here you can start trusting the roofline estimate
+    return 512 // bs
 
 
 class RequestIdToIntegerConverter:
@@ -107,7 +133,7 @@ class RequestIdToIntegerConverter:
         return int.from_bytes(digest[:4], 'big') & RequestIdToIntegerConverter._MAX_INT32
 
 
-def merge_masks_to_flat_variable_fast(
+def merge_masks_to_flat(
         spec_masks : List[torch.Tensor],   # CPU Bool  (sLᵢ, sLᵢ)
         seq_lens : torch.Tensor,         # 1-D Long  (batch,)
         device : torch.device = torch.device('cuda'),
@@ -149,7 +175,7 @@ def merge_masks_to_flat_variable_fast(
     return out
 
 
-def merge_masks_to_flat_variable_fast_with_padding(
+def merge_masks_to_flat_with_padding(
         spec_masks : List[torch.Tensor],   # CPU Bool  (sLᵢ, sLᵢ)
         seq_lens : torch.Tensor,         # 1-D Long  (batch,)
         pad_dims : List[int],
@@ -204,7 +230,7 @@ def merge_masks_to_flat_variable_fast_with_padding(
 
 class SSSDSpeculator:
     "Python interface between SGLang and the C++ speculator code."
-    def __init__(self, server_args: ServerArgs, device):
+    def __init__(self, server_args: ServerArgs, device, captured_batch_sizes: List[int], num_tokens_per_bs_map: dict):
         if sssd_speculator is None:
             raise ImportError("SSSD speculator is not installed. Please install speculator first.")
 
@@ -213,24 +239,20 @@ class SSSDSpeculator:
 
         self.request_converter = RequestIdToIntegerConverter()
         self.device = device
+        # If the speculation is not adaptive, these values are fixes, otherwise they are updated at each iteration
+        self.num_draft_tokens = server_args.speculative_num_draft_tokens
+        self.num_steps = server_args.speculative_num_steps
         self.topk = server_args.speculative_eagle_topk
+        # In this is true the previous 3 values are not used
+        self.speculative_adaptive = server_args.speculative_adaptive
+        self.captured_batch_sizes = captured_batch_sizes
+        self.num_tokens_per_bs_map = num_tokens_per_bs_map
 
         self.tokenizer = AutoTokenizer.from_pretrained(server_args.tokenizer_path)
         pad_tok = self.tokenizer.pad_token_id
         self.pad_token_id = pad_tok if pad_tok is not None else self.tokenizer.eos_token_id
 
         self._init_speculator(server_args)
-
-    @staticmethod
-    def _default_branch_func(speculate_len: int):
-        if speculate_len <= 5:
-            branch_length = speculate_len - 1
-        elif speculate_len <= 8:
-            branch_length = 5
-        else:
-            branch_length = 6
-
-        return branch_length
 
     def _init_speculator(self, server_args):
         datastore_path = server_args.speculative_draft_model_path
@@ -268,7 +290,19 @@ class SSSDSpeculator:
         assert req.sssd_id is not None, f"Request {req.rid} has no prompt inserted for speculation."
         self.speculator.stream_put(new_tokens=new_tokens, seq_id=req.sssd_id)
 
-    def get_draft(self, batch: ScheduleBatch, speculate_lens: List[int]):
+    def get_speculate_params_adaptive(self, batch: ScheduleBatch):
+        bs = batch.batch_size()
+
+        index = bisect.bisect_left(self.captured_batch_sizes, bs)
+        if index >= len(self.captured_batch_sizes):
+            return 1, 0, 0  # Beyond captured graphs, should not happen. Don't speculate
+        pad_bs = self.captured_batch_sizes[index]
+        self.num_draft_tokens = self.num_tokens_per_bs_map[pad_bs]
+        self.num_steps, self.topk = default_branch_func(self.num_draft_tokens)
+
+        return self.num_draft_tokens, self.num_steps, self.topk
+
+    def get_draft(self, batch: ScheduleBatch):
         # TODO: For now assume all speculate_lens are the same (SGLang doesn't support variable spec_len out of the box)
         prefixes = []
         speculator_req_ids = []
@@ -281,12 +315,12 @@ class SSSDSpeculator:
             
             speculator_req_ids.append(req.sssd_id)
 
-        seq_lens = batch.seq_lens
-        
-        bs = len(speculate_lens)
-        # Assuming all spec_lens are equal
-        branch_lens = [self._default_branch_func(speculate_lens[0])] * bs
+        bs = batch.batch_size()
+        speculate_lens = [self.num_draft_tokens] * bs
+        branch_lens = [self.num_steps] * bs
         max_topks = [self.topk] * bs
+
+        # print("Toks, steps, topk: ", self.num_draft_tokens, self.num_steps, self.topk)
         
         (
             candidates,
@@ -304,10 +338,11 @@ class SSSDSpeculator:
         
         # Convert numpy masks to torch (shares same memory)
         decoding_masks = [torch.from_numpy(m) for m in decoding_masks]
+
+        seq_lens = batch.seq_lens
         
         # If some request doesn't have all the candidates requested, pad it
-        fixed_speculate_len = speculate_lens[0]
-        to_pad = [fixed_speculate_len - l for l in [len(c) for c in candidates]]
+        to_pad = [self.num_draft_tokens - l for l in [len(c) for c in candidates]]
         if sum(to_pad) > 0:
             self._pad_speculate_outputs(
                 candidates,
@@ -316,15 +351,15 @@ class SSSDSpeculator:
                 next_sibling_ids,
                 to_pad
             )
-            full_tree_mask = merge_masks_to_flat_variable_fast_with_padding(
+            full_tree_mask = merge_masks_to_flat_with_padding(
                 decoding_masks,
                 seq_lens,
                 to_pad,
-                fixed_speculate_len,
+                self.num_draft_tokens,
                 self.device,
             )
         else:
-            full_tree_mask = merge_masks_to_flat_variable_fast(decoding_masks, seq_lens, self.device)
+            full_tree_mask = merge_masks_to_flat(decoding_masks, seq_lens, self.device)
         
         flattened_positions = torch.tensor(list(chain.from_iterable(position_ids)), device=self.device)
         spec_lens = torch.tensor([len(s) for s in position_ids], device=self.device)
@@ -474,12 +509,13 @@ class SSSDVerifyInput(EagleVerifyInput):
                     sampling_info.top_ks, self.draft_token_num, dim=0
                 ),
             )  # (bs * draft_token_num, vocab_size)
-            target_probs = top_p_renorm_prob(
-                target_probs,
-                torch.repeat_interleave(
-                    sampling_info.top_ps, self.draft_token_num, dim=0
-                ),
-            )
+            if not torch.all(sampling_info.top_ps == 1.0):
+                target_probs = top_p_renorm_prob(
+                    target_probs,
+                    torch.repeat_interleave(
+                        sampling_info.top_ps, self.draft_token_num, dim=0
+                    ),
+                )
             target_probs = target_probs.reshape(bs, self.draft_token_num, -1)
 
             draft_probs = torch.zeros(
@@ -729,3 +765,82 @@ class SSSDVerifyOutput:
     new_accepted_tokens: List[List[int]]
     # Finished requests, can be removed from speculator
     finished_requests: List[str]
+
+### UTILS ###
+    
+def default_branch_func(speculate_len: int):
+        if speculate_len <= 5:
+            branch_length = speculate_len - 1
+        elif speculate_len <= 8:
+            branch_length = 5
+        elif speculate_len <= 32:
+            branch_length = 6
+        elif speculate_len <= 48:
+            branch_length = 8
+        else:
+            branch_length = 10
+
+        return branch_length, min(5, speculate_len-1)
+
+
+def flops_to_bandwidth_ratio(copy_bytes: int = 1 * 1024 * 1024 * 1024,
+                             mm_size: int = 8192,
+                             repeats: int = 100) -> float:
+    """
+    Estimate GPU balance point (GFLOPs per GB/s) using roofline-style benchmarking.
+
+    - Bandwidth: measured with streaming AXPY-like kernel (2 reads + 1 write).
+    - FLOPs: measured with large GEMM on tensor cores (BF16).
+    - Ratio = GFLOPs / GB/s, i.e. arithmetic intensity required to be compute-bound.
+
+    Args:
+        copy_bytes (int): Size of the buffer for bandwidth test (default: 1 GiB).
+        mm_size (int): Matrix size for GEMM test (default: 8192).
+        repeats (int): Number of iterations to average (default: 100).
+
+    Returns:
+        float: FLOPs-to-bandwidth ratio (GFLOPs per GB/s).
+    """
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA device not available — run on a GPU-equipped system.")
+
+    # Bandwidth measurement
+    elems = copy_bytes // 2  # bf16 = 2 bytes
+    a = torch.randn(elems, dtype=torch.bfloat16, device="cuda")
+    b = torch.randn_like(a)
+
+    # warm-up
+    for _ in range(3):
+        torch.add(a, b, out=b)
+    torch.cuda.synchronize()
+
+    start = torch.cuda.Event(True)
+    end = torch.cuda.Event(True)
+
+    start.record()
+    for _ in range(repeats):
+        torch.add(a, b, out=b)  # 2 reads + 1 write
+    end.record()
+    torch.cuda.synchronize()
+
+    avg_ms_bw = start.elapsed_time(end) / repeats
+    bandwidth_gbps = (3 * copy_bytes * 1e-9) / (avg_ms_bw * 1e-3)
+
+    # FLOPs measurement
+    A = torch.randn(mm_size, mm_size, device="cuda", dtype=torch.bfloat16)
+    B = torch.randn_like(A)
+
+    for _ in range(3):
+        torch.matmul(A, B)
+    torch.cuda.synchronize()
+
+    start.record()
+    for _ in range(repeats):
+        torch.matmul(A, B)
+    end.record()
+    torch.cuda.synchronize()
+
+    avg_ms_flops = start.elapsed_time(end) / repeats
+    flops_gflops = (2.0 * mm_size ** 3 / 1e9) / (avg_ms_flops * 1e-3)
+
+    return flops_gflops / bandwidth_gbps

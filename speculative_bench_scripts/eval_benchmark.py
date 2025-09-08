@@ -7,47 +7,22 @@ import multiprocessing as mp
 
 from sglang.bench_offline_throughput import BenchArgs, throughput_test
 from sglang.srt.server_args import ServerArgs
-from sglang.srt.speculative.sssd_utils import SSSDSpeculator
+from sglang.srt.speculative.sssd_utils import default_branch_func
 from sglang.utils import get_timestamp_str, read_json, save_json
 
 # Default mapping for SSSD hyperparameters
 # key: batch_size
+batch_sizes = [1, 4, 8, 16, 32, 48, 64]
+speculation_lens = [32, 22, 16, 8, 4, 3, 2]
+
 default_SSSD_mapping = {
-    1: {
-        "speculative_eagle_topk": 5,
-        "speculative_num_draft_tokens": 32,
-        "speculative_num_steps": SSSDSpeculator._default_branch_func(32),
-    },
-    4: {
-        "speculative_eagle_topk": 5,
-        "speculative_num_draft_tokens": 22,
-        "speculative_num_steps": SSSDSpeculator._default_branch_func(22),
-    },
-    8: {
-        "speculative_eagle_topk": 5,
-        "speculative_num_draft_tokens": 16,
-        "speculative_num_steps": SSSDSpeculator._default_branch_func(16),
-    },
-    16: {
-        "speculative_eagle_topk": 5,
-        "speculative_num_draft_tokens": 8,
-        "speculative_num_steps": SSSDSpeculator._default_branch_func(8),
-    },
-    32: {
-        "speculative_eagle_topk": 3,
-        "speculative_num_draft_tokens": 4,
-        "speculative_num_steps": SSSDSpeculator._default_branch_func(4),
-    },
-    48: {
-        "speculative_eagle_topk": 2,
-        "speculative_num_draft_tokens": 3,
-        "speculative_num_steps": SSSDSpeculator._default_branch_func(3),
-    },
-    64: {
-        "speculative_eagle_topk": 1,
-        "speculative_num_draft_tokens": 2,
-        "speculative_num_steps": SSSDSpeculator._default_branch_func(2),
-    },
+    bs: {
+        "speculative_eagle_topk": eagle_topk,
+        "speculative_num_draft_tokens": slen,
+        "speculative_num_steps": num_steps,
+    }
+    for bs, slen in zip(batch_sizes, speculation_lens)
+    for num_steps, eagle_topk in [default_branch_func(slen)]
 }
 
 

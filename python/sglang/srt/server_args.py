@@ -178,6 +178,7 @@ class ServerArgs:
     speculative_accept_threshold_single: float = 1.0
     speculative_accept_threshold_acc: float = 1.0
     speculative_token_map: Optional[str] = None
+    speculative_adaptive: Optional[bool] = False
 
     # Expert parallelism
     ep_size: int = 1
@@ -676,6 +677,10 @@ class ServerArgs:
             # The token generated from the verify step is counted.
             # If sepculative_num_steps >= speculative_num_draft_tokens, the additional tokens will definitely be discarded.
             # assert self.speculative_num_steps < self.speculative_num_draft_tokens
+            if self.speculative_adaptive and self.speculative_algorithm != "SSSD":
+                logger.warning(
+                    f"speculative_adaptive is only supported by SSSD, and won't be used by {self.speculative_algorithm}"
+                )
 
         # GGUF
         if (
@@ -1474,6 +1479,11 @@ class ServerArgs:
             type=str,
             help="The path of the draft model's small vocab table.",
             default=ServerArgs.speculative_token_map,
+        )
+        parser.add_argument(
+            "--speculative-adaptive",
+            action="store_true",
+            help="Adapt the speculation length based on current batch size and hardware features.",
         )
 
         # Expert parallelism

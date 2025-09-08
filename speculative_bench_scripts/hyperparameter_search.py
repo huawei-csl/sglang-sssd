@@ -13,7 +13,7 @@ from optuna.trial import TrialState
 import multiprocessing as mp
 
 
-from sglang.srt.speculative.sssd_utils import SSSDSpeculator
+from sglang.srt.speculative.sssd_utils import default_branch_func
 from sglang.utils import get_timestamp_str, read_json, save_json
 
 
@@ -50,7 +50,7 @@ def objective(
 
     # For SSSD we derive speculative_num_steps from the number of draft tokens
     if base_server_args.speculative_algorithm == "SSSD":
-        params["speculative_num_steps"] = SSSDSpeculator._default_branch_func(
+        params["speculative_num_steps"], params["speculative_eagle_topk"] = default_branch_func(
             params["speculative_num_draft_tokens"]
         )
     else:

@@ -91,9 +91,9 @@ def plot_speedups(df: pd.DataFrame, benchmark_name: str, out_dir: str):
 
 if __name__ == "__main__":
     # Change as needed
-    result_path = "data/extra_results/h100_collected_results.json"
+    result_path = "data/collected_results.json"
     out_dir = "data/analysis/h100"
     data = read_json(result_path)
-    df, benchmark_name = construct_result_df(data, only_batch_sizes=[1, 8, 32, 64])
+    df, benchmark_name = construct_result_df(data, only_batch_sizes=[1, 4, 8, 16, 32, 48, 64])
     plot_speedups(df, benchmark_name, out_dir)
     print("Speedup plot saved successfully.")
