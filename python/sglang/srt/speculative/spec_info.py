@@ -12,6 +12,10 @@ class SpeculativeAlgorithm(IntEnum):
     EAGLE3 = auto()
     STANDALONE = auto()
     NGRAM = auto()
+    SSSD = auto()
+    PIA = auto()
+    REST = auto()
+    PLD = auto()
 
     def is_none(self):
         return self == SpeculativeAlgorithm.NONE
@@ -21,6 +25,29 @@ class SpeculativeAlgorithm(IntEnum):
 
     def is_eagle3(self):
         return self == SpeculativeAlgorithm.EAGLE3
+
+    def is_sssd(self):
+        return self == SpeculativeAlgorithm.SSSD
+
+    def is_pia(self):
+        return self == SpeculativeAlgorithm.PIA
+
+    def is_rest(self):
+        return self == SpeculativeAlgorithm.REST
+
+    def is_pld(self):
+        return self == SpeculativeAlgorithm.PLD
+
+    def is_model_free(self):
+        return (
+            self == SpeculativeAlgorithm.SSSD
+            or self == SpeculativeAlgorithm.PIA
+            or self == SpeculativeAlgorithm.REST
+            or self == SpeculativeAlgorithm.PLD
+        )
+
+    def is_speculative(self):
+        return not self == SpeculativeAlgorithm.NONE
 
     def is_standalone(self):
         return self == SpeculativeAlgorithm.STANDALONE
@@ -36,6 +63,10 @@ class SpeculativeAlgorithm(IntEnum):
             "EAGLE3": SpeculativeAlgorithm.EAGLE3,
             "STANDALONE": SpeculativeAlgorithm.STANDALONE,
             "NGRAM": SpeculativeAlgorithm.NGRAM,
+            "SSSD": SpeculativeAlgorithm.SSSD,
+            "PIA": SpeculativeAlgorithm.PIA,
+            "REST": SpeculativeAlgorithm.REST,
+            "PLD": SpeculativeAlgorithm.PLD,
             None: SpeculativeAlgorithm.NONE,
         }
         if name is not None:

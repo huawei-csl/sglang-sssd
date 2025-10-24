@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 import triton
 import triton.language as tl
 
@@ -603,3 +604,95 @@ def generate_token_bitmask(
 
     verify_input.grammar = grammar
     return allocate_token_bitmask
+
+
+@torch.no_grad()
+def softmax_topk_then_topp(
+    logits: torch.Tensor,  # [B, V]
+    ks: torch.Tensor,  # [B] or [B,1], int
+    ps: Optional[
+        torch.Tensor
+    ],  # [B] or [B,1], float in (0,1]; can be None or all 1.0 to skip
+    temperatures: torch.Tensor,  # [B] or [B,1], float > 0 (per-row)
+    eps: float = 1e-12,
+    return_sample: bool = False,
+    generator: Optional[torch.Generator] = None,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """
+    Full-vocab softmax with per-row temperature, then:
+      1) top-k keep + renorm
+      2) top-p (nucleus) within the kept set + renorm
+
+    B is actually the batch size*speculation length (flattened)
+    V is the vocabulary size
+
+    Returns:
+      probs_out:  [B, V]  — final (top-k then top-p) renormalized probs in vocab space
+      sampled_id: [B] or None — optional sampled token id drawn *after* both prunes
+    """
+    assert logits.dim() == 2, "logits must be [B, V]"
+    B, V = logits.shape
+    device = logits.device
+    dtype = logits.dtype
+
+    # Normalize shapes & clamp parameters
+    ks = ks.view(-1).to(device=device, dtype=torch.long)
+    assert ks.numel() == B
+    ks = ks.clamp_(1, V)
+
+    if ps is None:
+        ps = torch.ones(B, device=device, dtype=dtype)
+    else:
+        ps = ps.view(-1).to(device=device, dtype=dtype).clamp_(eps, 1.0)
+        assert ps.numel() == B
+
+    temperatures = temperatures.view(-1).to(device=device, dtype=dtype)
+    assert (temperatures > 0).all(), "temperature must be > 0"
+    scaled = logits / temperatures.unsqueeze(1)  # [B, V]
+
+    probs = F.softmax(scaled, dim=-1)  # [B, V]
+
+    # Top-k  + RENORM (within kept set)
+    k_max = int(ks.max().item())
+    top_vals, top_idx = probs.topk(
+        k_max, dim=1, largest=True, sorted=True
+    )  # [B, k_max]
+
+    # keep only first k entries per row
+    ar = torch.arange(k_max, device=device).unsqueeze(0)  # [1, k_max]
+    keep_k = ar < ks.unsqueeze(1)  # [B, k_max] bool
+
+    kept_k = top_vals * keep_k  # masked probs in top-k
+    sum_k = kept_k.sum(dim=1, keepdim=True)  # [B, 1]
+    # Guard (shouldn't trip with k>=1)
+    sum_k = sum_k + (sum_k <= eps) * eps
+    topk_renorm = kept_k / sum_k  # [B, k_max], sums to 1 across kept entries
+
+    # Top-p in the kept set + renorm
+    # Classic nucleus on the already renormalized top-k distribution:
+    cumsum = topk_renorm.cumsum(dim=1)  # [B, k_max]
+    keep_p = (cumsum - topk_renorm) < ps.unsqueeze(1)  # minimal prefix
+    # ensure at least one kept
+    none_kept = ~keep_p.any(dim=1)
+    if none_kept.any():
+        keep_p[none_kept, 0] = True
+
+    kept_kp = topk_renorm * keep_p
+    sum_kp = kept_kp.sum(dim=1, keepdim=True)  # [B, 1]
+    sum_kp = sum_kp + (sum_kp <= eps) * eps
+    topkp_renorm = kept_kp / sum_kp  # [B, k_max]
+
+    # Scatter back to full vocab
+    probs_out = probs.new_zeros((B, V))  # [B, V]
+    probs_out.scatter_(1, top_idx, topkp_renorm)  # zero elsewhere
+
+    # In case you also want to sample directly from the new distribution
+    sampled_id = None
+    if return_sample:
+        # We can sample efficiently within the top-k window to avoid building a CDF over V
+        cdf = topkp_renorm.cumsum(dim=1)  # [B, k_max]
+        u = torch.rand((B, 1), device=device, generator=generator)
+        idx_in_k = torch.searchsorted(cdf, u, right=False).clamp_(max=k_max - 1)
+        sampled_id = top_idx.gather(1, idx_in_k).squeeze(1)  # [B]
+
+    return probs_out, sampled_id

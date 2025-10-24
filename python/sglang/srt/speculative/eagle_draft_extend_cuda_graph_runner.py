@@ -57,6 +57,9 @@ class EAGLEDraftExtendCudaGraphRunner:
         self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(model_runner)
         self.padded_static_len = -1
 
+        # Just for compatibility with the standard CudaGraphRunner
+        self.speculative_adaptive = False
+
         # Attention backend
         self.num_tokens_per_bs = self.speculative_num_steps + 1
         self.max_bs = max(self.capture_bs)

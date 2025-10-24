@@ -31,6 +31,7 @@ from sglang.srt.speculative.spec_utils import (
     assign_req_to_token_pool,
     get_src_tgt_cache_loc,
     get_target_cache_loc,
+    softmax_topk_then_topp,
 )
 from sglang.srt.utils import is_cuda, is_hip, next_power_of_2
 
@@ -66,6 +67,7 @@ class NgramVerifyInput(SpecInput):
         self.retrive_next_sibling = retrive_next_sibling
         self.draft_token_num = draft_token_num
         self.device = self.custom_mask.device
+        self.fused_sampling = True
 
     def get_spec_adjust_token_coefficient(self) -> Tuple[int, int]:
         return self.draft_token_num, self.draft_token_num
@@ -304,29 +306,52 @@ class NgramVerifyInput(SpecInput):
             (bs, self.draft_token_num), -1, dtype=torch.int32, device=self.device
         )
         self.accept_length = torch.empty((bs,), dtype=torch.int32, device=self.device)
-        # apply temperature and get target probs
-        expanded_temperature = torch.repeat_interleave(
-            sampling_info.temperatures, self.draft_token_num, dim=0
-        )  # (bs * draft_token_num, 1)
+        if not self.fused_sampling:
+            # apply temperature and get target probs
+            expanded_temperature = torch.repeat_interleave(
+                sampling_info.temperatures, self.draft_token_num, dim=0
+            )  # (bs * draft_token_num, 1)
 
-        target_probs = F.softmax(
-            logits_output.next_token_logits / expanded_temperature, dim=-1
-        )  # (bs * draft_token_num, vocab_size)
+            target_probs = F.softmax(
+                logits_output.next_token_logits / expanded_temperature, dim=-1
+            )  # (bs * draft_token_num, vocab_size)
 
-        # NOTE: The test shows that top_p_renorm_prob and top_k_renorm_prob are the key factors
-        # contributing to the poor performance of _sampling_verify.
-        target_probs = top_k_renorm_prob(
-            target_probs,
-            torch.repeat_interleave(sampling_info.top_ks, self.draft_token_num, dim=0),
-        )  # (bs * draft_token_num, vocab_size)
-
-        if sampling_info.need_top_p_sampling:
-            # logger.info("Using top-p sampling in speculative decoding verification.")
-            target_probs = top_p_renorm_prob(
+            # NOTE: The test shows that top_p_renorm_prob and top_k_renorm_prob are the key factors
+            # contributing to the poor performance of _sampling_verify.
+            target_probs = top_k_renorm_prob(
                 target_probs,
                 torch.repeat_interleave(
-                    sampling_info.top_ps, self.draft_token_num, dim=0
+                    sampling_info.top_ks, self.draft_token_num, dim=0
                 ),
+            )  # (bs * draft_token_num, vocab_size)
+
+            if sampling_info.need_top_p_sampling:
+                # logger.info("Using top-p sampling in speculative decoding verification.")
+                target_probs = top_p_renorm_prob(
+                    target_probs,
+                    torch.repeat_interleave(
+                        sampling_info.top_ps, self.draft_token_num, dim=0
+                    ),
+                )
+        else:  # faster version
+            flat_logits = logits_output.next_token_logits  # [B, V]
+            flat_ks = torch.repeat_interleave(
+                sampling_info.top_ks, self.draft_token_num, dim=0
+            ).view(-1)
+            flat_ps = torch.repeat_interleave(
+                sampling_info.top_ps, self.draft_token_num, dim=0
+            ).view(-1)
+            flat_T = torch.repeat_interleave(
+                sampling_info.temperatures, self.draft_token_num, dim=0
+            ).view(-1)
+
+            target_probs, _ = softmax_topk_then_topp(
+                logits=flat_logits,
+                ks=flat_ks,
+                ps=flat_ps,
+                temperatures=flat_T,
+                return_sample=False,
+                generator=None,
             )
 
         target_probs = target_probs.reshape(bs, self.draft_token_num, -1)
@@ -412,8 +437,8 @@ class NgramVerifyInput(SpecInput):
             self._greedy_verify(batch, logits_output)
         else:
             # NOTE: Compared with greedy_verify, the performance of _sampling_verify is relatively poor.
-            self._greedy_verify(batch, logits_output)
-            # self._sampling_verify(batch, logits_output, sampling_info)
+            # self._greedy_verify(batch, logits_output)
+            self._sampling_verify(batch, logits_output, sampling_info)
 
         self._fill_requests(batch, logits_output)
         self._free_cache(batch, page_size)
