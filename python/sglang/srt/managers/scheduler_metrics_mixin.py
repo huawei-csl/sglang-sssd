@@ -270,6 +270,9 @@ class SchedulerMetricsMixin:
             self.cum_spec_accept_count += self.spec_num_total_forward_ct
             self.spec_num_total_accepted_tokens = self.spec_num_total_forward_ct = 0
             msg += f"accept len: {spec_accept_length:.2f}, accept rate: {spec_accept_rate:.2f}, "
+            self.send_metrics_from_scheduler.send_pyobj(
+                {"avg_accept_length": spec_accept_length}
+            )
         cache_hit_rate = 0.0
 
         if self.disaggregation_mode == DisaggregationMode.DECODE:

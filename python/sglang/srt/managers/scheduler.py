@@ -703,6 +703,42 @@ class Scheduler(
                 target_worker=self.tp_worker,
                 dp_rank=dp_rank,
             )
+        elif self.spec_algorithm.is_sssd():
+            from sglang.srt.speculative.sssd_worker import SSSDWorker
+
+            self.draft_worker = SSSDWorker(
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+                server_args=server_args,
+                target_worker=self.tp_worker,
+            )
+        elif self.spec_algorithm.is_pia():
+            from sglang.srt.speculative.pia_worker import PIAWorker
+
+            self.draft_worker = PIAWorker(
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+                server_args=server_args,
+                target_worker=self.tp_worker,
+            )
+        elif self.spec_algorithm.is_rest():
+            from sglang.srt.speculative.rest_worker import RESTWorker
+
+            self.draft_worker = RESTWorker(
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+                server_args=server_args,
+                target_worker=self.tp_worker,
+            )
+        elif self.spec_algorithm.is_pld():
+            from sglang.srt.speculative.pld_worker import PLDWorker
+
+            self.draft_worker = PLDWorker(
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+                server_args=server_args,
+                target_worker=self.tp_worker,
+            )
         else:
             self.draft_worker = None
 
@@ -897,8 +933,16 @@ class Scheduler(
             )
             self.disagg_metadata_buffers = MetadataBuffers(
                 buffer_size,
-                hidden_size=self.model_config.hf_text_config.hidden_size,
-                hidden_states_dtype=self.model_config.dtype,
+                hidden_size=(
+                    self.draft_worker.model_config.hidden_size
+                    if self.spec_algorithm.is_eagle()
+                    else 16  # minimal padding size for RDMA
+                ),
+                hidden_states_dtype=(
+                    self.draft_worker.model_config.dtype
+                    if self.spec_algorithm.is_eagle()
+                    else torch.float32
+                ),
                 custom_mem_pool=self.token_to_kv_pool_allocator.get_kvcache().maybe_get_custom_mem_pool(),
             )
 
@@ -912,13 +956,18 @@ class Scheduler(
                 tree_cache=self.tree_cache,
             )
 
+            speculator = None
+            if self.spec_algorithm.is_sssd() or self.spec_algorithm.is_pia():
+                speculator = self.draft_worker
             # The decode requests pending for pre-allocation
             self.disagg_decode_prealloc_queue = DecodePreallocQueue(
                 req_to_token_pool=self.req_to_token_pool,
                 token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
                 draft_token_to_kv_pool=(
                     None
-                    if self.draft_worker is None or self.spec_algorithm.is_ngram()
+                    if self.draft_worker is None
+                    or self.spec_algorithm.is_ngram()
+                    or self.spec_algorithm.is_model_free()
                     else self.draft_worker.model_runner.token_to_kv_pool
                 ),
                 req_to_metadata_buffer_idx_allocator=self.req_to_metadata_buffer_idx_allocator,
@@ -936,6 +985,7 @@ class Scheduler(
                 prefill_pp_size=self.server_args.disaggregation_prefill_pp,
                 num_reserved_decode_tokens=self.server_args.num_reserved_decode_tokens,
                 transfer_backend=self.transfer_backend,
+                speculator=speculator,
             )
 
         elif self.disaggregation_mode == DisaggregationMode.PREFILL:
@@ -946,8 +996,16 @@ class Scheduler(
             )
             self.disagg_metadata_buffers = MetadataBuffers(
                 buffer_size,
-                hidden_size=self.model_config.hf_text_config.hidden_size,
-                hidden_states_dtype=self.model_config.dtype,
+                hidden_size=(
+                    self.draft_worker.model_config.hidden_size
+                    if self.spec_algorithm.is_eagle()
+                    else 16  # minimal padding size for RDMA
+                ),
+                hidden_states_dtype=(
+                    self.draft_worker.model_config.dtype
+                    if self.spec_algorithm.is_eagle()
+                    else torch.float32
+                ),
                 custom_mem_pool=self.token_to_kv_pool_allocator.get_kvcache().maybe_get_custom_mem_pool(),
             )
 
@@ -955,7 +1013,9 @@ class Scheduler(
                 token_to_kv_pool=self.token_to_kv_pool_allocator.get_kvcache(),
                 draft_token_to_kv_pool=(
                     None
-                    if self.draft_worker is None or self.spec_algorithm.is_ngram()
+                    if self.draft_worker is None
+                    or self.spec_algorithm.is_ngram()
+                    or self.spec_algorithm.is_model_free()
                     else self.draft_worker.model_runner.token_to_kv_pool
                 ),
                 req_to_metadata_buffer_idx_allocator=self.req_to_metadata_buffer_idx_allocator,
@@ -2252,7 +2312,7 @@ class Scheduler(
             # These 2 values are needed for processing the output, but the values can be
             # modified by overlap schedule. So we have to copy them here so that
             # we can use the correct values in output processing.
-            if batch.return_logprob or self.spec_algorithm.is_eagle():
+            if batch.return_logprob or self.spec_algorithm.is_speculative():
                 extend_input_len_per_req = [req.extend_input_len for req in batch.reqs]
             else:
                 extend_input_len_per_req = None
@@ -2804,6 +2864,9 @@ class Scheduler(
                     logger.debug(f"Abort prealloc queue request. {decode_req.req.rid=}")
                     if hasattr(decode_req.kv_receiver, "abort"):
                         decode_req.kv_receiver.abort()
+                    self.disagg_decode_prealloc_queue.remove_from_speculator(
+                        decode_req.req.rid
+                    )
 
             # Abort requests waiting for kvcache to release tree cache
             for decode_req in self.disagg_decode_transfer_queue.queue:
@@ -2811,6 +2874,9 @@ class Scheduler(
                     logger.debug(f"Abort transfer queue request. {decode_req.req.rid=}")
                     if hasattr(decode_req.kv_receiver, "abort"):
                         decode_req.kv_receiver.abort()
+                    self.disagg_decode_prealloc_queue.remove_from_speculator(
+                        decode_req.req.rid
+                    )
 
         # Delete requests in the running batch
         if self.cur_batch is self.running_batch or self.cur_batch is None:

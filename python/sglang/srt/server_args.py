@@ -344,6 +344,7 @@ class ServerArgs:
     speculative_ngram_match_type: Literal["BFS", "PROB"] = "BFS"
     speculative_ngram_branch_length: int = 18
     speculative_ngram_capacity: int = 10 * 1000 * 1000
+    speculative_adaptive: Optional[bool] = False
 
     # Expert parallelism
     ep_size: int = 1
@@ -785,7 +786,7 @@ class ServerArgs:
             capture_bs = (
                 list(range(1, 9, 1))
                 + list(range(10, 33, 2))
-                + list(range(40, 64, 4))
+                + list(range(40, 65, 4))
                 + list(range(72, 257, 8))
                 + list(range(272, self.cuda_graph_max_bs + 1, 16))
             )
@@ -1187,7 +1188,26 @@ class ServerArgs:
         if self.speculative_algorithm == "NEXTN":
             self.speculative_algorithm = "EAGLE"
 
-        if self.speculative_algorithm in ("EAGLE", "EAGLE3", "STANDALONE"):
+        if self.speculative_adaptive and self.speculative_algorithm not in [
+            "SSSD",
+            "PIA",
+            "PLD",
+            "REST",
+        ]:
+            logger.warning(
+                f"speculative_adaptive is only supported by SSSD, and won't be used by {self.speculative_algorithm}"
+            )
+            self.speculative_adaptive = False
+
+        if self.speculative_algorithm in (
+            "EAGLE",
+            "EAGLE3",
+            "STANDALONE",
+            "SSSD",
+            "PIA",
+            "REST",
+            "PLD",
+        ):
             if self.speculative_algorithm == "STANDALONE" and self.enable_dp_attention:
                 # TODO: support dp attention for standalone speculative decoding
                 raise ValueError(
@@ -1230,6 +1250,14 @@ class ServerArgs:
                         "DeepSeek MTP does not require setting speculative_draft_model_path."
                     )
 
+            # Auto choose parameters
+            if self.speculative_algorithm == "PLD" and not self.speculative_adaptive:
+                assert (
+                    self.speculative_num_steps is not None
+                ), "For PLD, specify the speculative_num_steps"
+                self.speculative_num_draft_tokens = self.speculative_num_steps + 1
+                self.speculative_eagle_topk = 1
+
             if self.speculative_num_steps is None:
                 assert (
                     self.speculative_eagle_topk is None
@@ -1260,6 +1288,14 @@ class ServerArgs:
                 )
                 self.speculative_num_draft_tokens = self.speculative_num_steps + 1
 
+        if self.speculative_algorithm in [
+            "EAGLE",
+            "EAGLE3",
+            "SSSD",
+            "PIA",
+            "PLD",
+            "REST",
+        ]:
             if (
                 self.speculative_eagle_topk > 1
                 and self.page_size > 1
@@ -1991,6 +2027,12 @@ class ServerArgs:
             default="localhost:4317",
             help="Config opentelemetry collector endpoint if --enable-trace is set. format: <ip>:<port>",
         )
+        parser.add_argument(
+            "--enable_metrics",
+            action="store_true",
+            default=ServerArgs.enable_metrics,
+            help="Enable metrics collection",
+        )
 
         # API related
         parser.add_argument(
@@ -2251,7 +2293,17 @@ class ServerArgs:
         parser.add_argument(
             "--speculative-algorithm",
             type=str,
-            choices=["EAGLE", "EAGLE3", "NEXTN", "STANDALONE", "NGRAM"],
+            choices=[
+                "EAGLE",
+                "EAGLE3",
+                "NEXTN",
+                "STANDALONE",
+                "NGRAM",
+                "SSSD",
+                "PIA",
+                "REST",
+                "PLD",
+            ],
             help="Speculative algorithm.",
         )
         parser.add_argument(
@@ -2363,6 +2415,11 @@ class ServerArgs:
             type=int,
             default=ServerArgs.speculative_ngram_capacity,
             help="The cache capacity for ngram speculative decoding.",
+        )
+        parser.add_argument(
+            "--speculative-adaptive",
+            action="store_true",
+            help="Adapt the speculation length based on current batch size and hardware features.",
         )
 
         # Expert parallelism

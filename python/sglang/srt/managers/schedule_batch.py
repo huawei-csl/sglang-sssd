@@ -80,6 +80,7 @@ from sglang.srt.utils.common import next_power_of_2
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.speculative.model_free_utils import ModelFreeVerifyInput
     from sglang.srt.speculative.spec_info import SpecInput, SpeculativeAlgorithm
 
 INIT_INCREMENTAL_DETOKENIZATION_OFFSET = 5
@@ -612,6 +613,9 @@ class Req:
         # The number of accepted tokens in speculative decoding for this request.
         # This is used to compute the acceptance rate and average acceptance length per request.
         self.spec_accepted_tokens = 0
+
+        # For SSSD and PIA speculative decoding: the converted id as it is used by the speculator
+        self.sssd_id = None
 
         # For metrics
         self.metrics_collector = metrics_collector
@@ -1525,7 +1529,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             # FIXME(lsyin): make this sync optional
             self.allocate_for_eagle_v2()
 
-        if not self.spec_algorithm.is_none():
+        if self.spec_algorithm.is_speculative():
             # if spec decoding is used, the decode batch is prepared inside
             # `forward_batch_speculative_generation` after running draft models.
             return

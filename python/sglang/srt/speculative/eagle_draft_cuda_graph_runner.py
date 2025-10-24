@@ -79,6 +79,9 @@ class EAGLEDraftCudaGraphRunner:
         if self.enable_torch_compile:
             set_torch_compile_config()
 
+        # Just for compatibility with the standard CudaGraphRunner
+        self.speculative_adaptive = False
+
         # Graph inputs
         with torch.device("cuda"):
             self.input_ids = torch.zeros((self.max_num_token,), dtype=torch.int64)

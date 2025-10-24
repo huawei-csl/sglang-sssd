@@ -31,8 +31,10 @@ from sglang.bench_serving import (
     set_ulimit,
 )
 from sglang.lang.backend.runtime_endpoint import Runtime
+from sglang.metrics_receiver import MetricsReceiver
 from sglang.srt.entrypoints.engine import Engine
 from sglang.srt.server_args import ServerArgs
+from sglang.utils import print_rounded_dictionary
 
 
 @dataclasses.dataclass
@@ -60,6 +62,9 @@ class BenchArgs:
     skip_warmup: bool = False
     do_not_exit: bool = False
     prompt_suffix: str = ""
+    temperature: float = 0.0
+    top_p: float = 1.0
+    top_k: int = -1
 
     @staticmethod
     def add_cli_args(parser: argparse.ArgumentParser):
@@ -71,7 +76,6 @@ class BenchArgs:
             "--dataset-name",
             type=str,
             default="sharegpt",
-            choices=["sharegpt", "random", "generated-shared-prefix"],
             help="Name of the dataset to benchmark on.",
         )
         parser.add_argument(
@@ -187,6 +191,24 @@ class BenchArgs:
             default="",
             help="Suffix applied to the end of all user prompts, followed by assistant prompt suffix.",
         )
+        parser.add_argument(
+            "--temperature",
+            type=float,
+            default=0.0,
+            help="For sampling.",
+        )
+        parser.add_argument(
+            "--top-p",
+            type=float,
+            default=1.0,
+            help="For sampling.",
+        )
+        parser.add_argument(
+            "--top-k",
+            type=int,
+            default=-1,
+            help="For sampling.",
+        )
 
     @classmethod
     def from_cli_args(cls, args: argparse.Namespace):
@@ -201,6 +223,10 @@ def throughput_test_once(
     ignore_eos: bool,
     extra_request_body: Dict,
     profile: bool,
+    do_sample=False,
+    temperature=0,
+    top_p=1.0,
+    top_k=-1,
 ):
     measurement_results = {
         "backend": backend_name,
@@ -215,15 +241,28 @@ def throughput_test_once(
     }
 
     prompt = [r.prompt for r in reqs]
-    sampling_params = [
-        {
-            "temperature": 0,
-            "max_new_tokens": r.output_len,
-            "ignore_eos": ignore_eos,
-            **extra_request_body,
-        }
-        for r in reqs
-    ]
+    if not do_sample:
+        sampling_params = [
+            {
+                "temperature": 0,
+                "max_new_tokens": r.output_len,
+                "ignore_eos": ignore_eos,
+                **extra_request_body,
+            }
+            for r in reqs
+        ]
+    else:
+        sampling_params = [
+            {
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "max_new_tokens": r.output_len,
+                "ignore_eos": ignore_eos,
+                **extra_request_body,
+            }
+            for r in reqs
+        ]
 
     if profile:
         assert (
@@ -244,6 +283,10 @@ def throughput_test_once(
 
     if backend_name == "runtime":
         gen_out = json.loads(gen_out)
+
+    # # TODO (mmarzollo): just for checking correctness. Remove in the end.
+    # for out in gen_out:
+    #     print(out["text"])
 
     server_info = backend.get_server_info()
 
@@ -310,7 +353,7 @@ def monitor_trace_file(known_files, directory, interval=1):
 def throughput_test(
     server_args: ServerArgs,
     bench_args: BenchArgs,
-):
+) -> dict:
     if bench_args.backend == "engine":
         backend = Engine(**dataclasses.asdict(server_args))
         if not backend:
@@ -345,6 +388,7 @@ def throughput_test(
         dataset_path=bench_args.dataset_path,
     )
 
+    do_sample = not bench_args.temperature == 0
     # Warm up
     if not bench_args.skip_warmup:
         logging.info("\nWarmup...")
@@ -355,8 +399,21 @@ def throughput_test(
             ignore_eos=not bench_args.disable_ignore_eos,
             extra_request_body=extra_request_body,
             profile=False,
+            do_sample=do_sample,
+            temperature=bench_args.temperature,
+            top_p=bench_args.top_p,
+            top_k=bench_args.top_k,
         )
         time.sleep(0.5)
+
+    # Initialize metrics receiver if needed
+    metrics_receiver = None
+    if server_args.enable_metrics and hasattr(backend, "port_args"):
+        try:
+            metrics_receiver = MetricsReceiver(backend.port_args)
+            metrics_receiver.start()
+        except Exception as e:
+            print(f"Failed to start metrics receiver: {e}")
 
     logging.info("\nBenchmark...")
     result = throughput_test_once(
@@ -366,9 +423,29 @@ def throughput_test(
         ignore_eos=not bench_args.disable_ignore_eos,
         extra_request_body=extra_request_body,
         profile=bench_args.profile,
+        do_sample=do_sample,
+        temperature=bench_args.temperature,
+        top_p=bench_args.top_p,
+        top_k=bench_args.top_k,
     )
     backend.shutdown()
 
+    extra_metrics = {}
+    if metrics_receiver:
+        metrics_receiver.stop()
+        received_metrics = metrics_receiver.get_all_metrics()
+        if server_args.speculative_algorithm:
+            extra_metrics["avg_acceptance_length"] = float(
+                np.mean(
+                    [
+                        d["avg_accept_length"]
+                        for d in received_metrics
+                        if isinstance(d, dict)
+                    ]
+                )
+            )
+
+    result["extra_metrics"] = extra_metrics
     if bench_args.result_filename:
         with open(bench_args.result_filename, "a") as fout:
             fout.write(json.dumps(result) + "\n")
@@ -409,6 +486,8 @@ def throughput_test(
         )
     )
     print("=" * 50)
+    print("Extra metrics:")
+    print_rounded_dictionary(result["extra_metrics"])
 
     return result
 

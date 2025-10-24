@@ -1,3 +1,131 @@
+# SGLang + SSSD
+
+This is a fork of the [SGLang Project](https://github.com/sgl-project/sglang) used to evaluate the Simply-Scalable Speculative Decoding (SSSD) method and compare it against baseline approaches.
+
+This branch contains the code used for the experiments reported in the **ACL 2026** [paper](https://arxiv.org/abs/2411.05894). It is based on release `v0.5.3.post3`.
+
+## Prerequisites
+1. Running SSSD's datastore and the relevant SGLang benchmarks will require at least 64GB of RAM and 32GB VRAM. Please ensure you have the hardware for this.
+2. Ensure you have access to the [Llama 3.1 model family](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct). This requires approval by Meta and can take a few minutes to hours. Upon approval make sure to have the [huggingface access token](https://huggingface.co/docs/hub/en/security-tokens) ready.
+
+## Installing & Running
+We provide 2 installation routes: using Docker or conda.
+
+### Docker
+1. Ensure [Docker](https://docs.docker.com/engine/install/ubuntu/#install-using-the-convenience-script) is installed. This can be tested with:
+```bash
+docker run --rm hello-world
+```
+2. Pull and run the `lmsysorg/sglang:v0.5.3.post3` docker image:
+
+```
+docker pull lmsysorg/sglang:v0.5.3.post3
+docker run --rm -it --gpus all --ipc=host lmsysorg/sglang:v0.5.3.post3 bash
+```
+
+3. Once docker is functioning, clone this repository and run the build script from the root:
+```
+mkdir /workspace
+cd /workspace
+git clone --recurse-submodules --branch sssd-v0.5.3.post3 https://github.com/huawei-csl/sglang-sssd.git
+cd sglang-sssd
+python3 -m pip install --upgrade pip
+pip install -e "python"
+(cd sssd_speculator && pip install -e . --config-settings editable_mode=compat)
+# Additional required command for MT-Bench german
+apt-get update && apt-get install -y ed
+
+# Install REST
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"
+pip install maturin==0.12
+
+cd sssd_speculator/evaluation/REST/DraftRetriever_adapted/
+maturin build --release --strip -i python3.12
+pip install target/wheels/draftretriever*312*.whl
+
+# (Optional) Install PIA (alternative implementation of the "LOOKAHEAD" method (from SGLang))
+cd /workspace
+git clone https://github.com/alipay/PainlessInferenceAcceleration.git
+cd PainlessInferenceAcceleration/lookahead
+pip install -e .
+
+cd /workspace/sglang-sssd
+```
+
+4. Get hf tokens to access llama models and The Stack.
+
+For the Stack, go to https://huggingface.co/datasets/bigcode/the-stack-dedup, give your email (same as in your hf account),
+and create an authentication token in your account.
+
+Set your tokens with
+```
+export HF_TOKEN=<your_token>
+export STACK_TOKEN=<token_for_the_stack>
+```
+(usually the token is the same, if you got access from the same account).
+
+5. To prepare models and datastores to run evaluations, run
+
+```
+nohup bash ./speculative_bench_scripts/setup_8B.sh > setup_8B.log 2>&1 &
+```
+or
+```
+nohup bash ./speculative_bench_scripts/setup_70B.sh > setup_70B.log 2>&1 &
+```
+
+6. To launch the llama 3.1 offline benchmark, use:
+```
+nohup bash ./speculative_bench_scripts/run_e2e_8B.sh > e2e_run.log 2>&1 &
+```
+or
+```
+nohup bash ./speculative_bench_scripts/run_e2e_70b.sh > e2e_run.log 2>&1 &
+```
+
+7. For disaggregated Prefill/Decode do the following:
+
+If you haven't run the e2e test yet, run `bash ./speculative_bench_scripts/run_e2e.sh` to download the models and prepare the datastore, after having commented out the benchmark part. then run
+
+```
+cd speculative_bench_scripts
+nohup bash ./run_dispd_grid_eval.sh > dispd_run.log 2>&1 &
+```
+You should set the correct values for PD, TP etc. within the script, depending on your hardware.
+
+For the multilingual and reasoning benchmarks, after installing SGLang, simply run
+
+```
+cd speculative_bench_scripts
+nohup bash ./multilingual_bench.sh > multilingual.log 2>&1 &
+# or
+nohup bash ./reasoning_benchmark.sh > reasoning.log 2>&1 &
+```
+The commands will download models, create all necessary datastores and run the evaluations (and store the results in `data_multilingual` and `data_reasoning`). For the multilingual evaluation you need to generate the data from the model first. To run the evaluation with the corresponding datasets with data found online, substitute all the `deepinfra_outputs/*` datasets with the corresponding hf datasets in the `create_subdatastores.py` files (e.g. `"sharegpt"`, `"sharegpt-ita"`, `"evol-instruct-en"`,...).
+
+### Conda
+
+**Note**: This route has only been tested for Ubuntu 22.04. For other systems, you may need to install additional dependencies.
+1. Ensure [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html) is installed, although it is also fine to use `miniconda`.
+2. Clone this repository and run the conda installation script:
+```
+git clone --recurse-submodules --branch add_sssd git@github.com:huawei-csl/sglang-sssd.git
+cd sglang-sssd
+bash ./speculative_bench_scripts/sssd_install.sh
+```
+4. Activate the conda environment and then:
+```
+export HF_TOKEN=<your_token>
+export MODEL_DIR=<place_to_download_models_to>
+bash ./speculative_bench_scripts/run_e2e.sh
+```
+
+When running the benchmarks you can also:
+- `export DATA_DIR=<results_directory>` to set where benchmark results should be saved to.
+
+--------------------------------------------------------------------------------
+
 <div align="center" id="sglangtop">
 <img src="https://raw.githubusercontent.com/sgl-project/sglang/main/assets/logo.png" alt="logo" width="400" margin="10px"></img>
 

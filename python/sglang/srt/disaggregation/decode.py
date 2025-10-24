@@ -70,6 +70,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.managers.scheduler import Scheduler
+    from sglang.srt.speculative.model_free_worker import ModelFreeWorker
 
 CLIP_MAX_NEW_TOKEN = get_int_env_var("SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION", 4096)
 
@@ -197,6 +198,7 @@ class DecodePreallocQueue:
         prefill_pp_size: int,
         num_reserved_decode_tokens: int,
         transfer_backend: TransferBackend,
+        speculator: ModelFreeWorker,
     ):
         self.req_to_token_pool = req_to_token_pool
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
@@ -223,6 +225,8 @@ class DecodePreallocQueue:
         self.retracted_queue: List[Req] = []
         self.prefill_pp_size = prefill_pp_size
         self.kv_manager = self._init_kv_manager()
+        # For SSSD and PIA, to store the prompt when the request is received
+        self.speculator = speculator
 
     def _init_kv_manager(self) -> BaseKVManager:
         kv_args_class = get_kv_class(self.transfer_backend, KVClassType.KVARGS)
@@ -320,6 +324,8 @@ class DecodePreallocQueue:
             self.queue.append(
                 DecodeRequest(req=req, kv_receiver=kv_receiver, waiting_for_input=False)
             )
+            if self.speculator:
+                self.speculator.add_request(req)
 
     def _check_if_req_exceed_kv_capacity(self, req: Req) -> bool:
         if len(req.origin_input_ids) > self.max_total_num_tokens:
@@ -360,6 +366,8 @@ class DecodePreallocQueue:
             req.is_retracted = False
             self._pre_alloc(req)
             allocatable_tokens -= required_tokens_for_request
+            if self.speculator:
+                self.speculator.add_request(req)
 
             # load from cpu, release the cpu copy
             req.load_kv_cache(self.req_to_token_pool, self.token_to_kv_pool_allocator)
@@ -371,6 +379,10 @@ class DecodePreallocQueue:
         ]
 
         return resumed_reqs
+
+    def remove_from_speculator(self, req_id: str):
+        if self.speculator:
+            self.speculator.remove_request(req_id)
 
     def _update_handshake_waiters(self) -> None:
         if not self.queue:
