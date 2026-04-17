@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.managers.scheduler import Scheduler
     from sglang.srt.server_args import ServerArgs
+    from sglang.srt.speculative.model_free_worker import ModelFreeWorker
 
 CLIP_MAX_NEW_TOKEN = envs.SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION.get()
 
@@ -263,6 +264,7 @@ class DecodePreallocQueue:
         pp_rank: int,
         num_reserved_decode_tokens: int,
         transfer_backend: TransferBackend,
+        speculator: ModelFreeWorker,
     ):
         self.req_to_token_pool = req_to_token_pool
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
@@ -301,6 +303,9 @@ class DecodePreallocQueue:
         self.kv_manager = self._init_kv_manager()
         if self.enable_staging:
             self.transfer_queue._init_staging_handler(self.kv_manager)
+
+        # For SSSD and PIA, to store the prompt when the request is received
+        self.speculator = speculator
 
         if self.scheduler.tp_worker.is_hybrid_swa:
             # FIXME: current SWA allocation allocate full kv cache size in prefill
@@ -464,6 +469,8 @@ class DecodePreallocQueue:
 
         decode_req = DecodeRequest(req=req, kv_receiver=kv_receiver)
         self.queue.append(decode_req)
+        if self.speculator:
+            self.speculator.add_request(req)
         return decode_req
 
     def _check_if_req_exceed_kv_capacity(self, req: Req) -> bool:
@@ -510,6 +517,8 @@ class DecodePreallocQueue:
             req.is_retracted = False
             self._pre_alloc(req)
             allocatable_tokens -= required_tokens_for_request
+            if self.speculator:
+                self.speculator.add_request(req)
 
             # load from cpu, release the cpu copy
             req.load_kv_cache(self.req_to_token_pool, self.token_to_kv_pool_allocator)
@@ -521,6 +530,10 @@ class DecodePreallocQueue:
         ]
 
         return resumed_reqs
+
+    def remove_from_speculator(self, req_id: str):
+        if self.speculator:
+            self.speculator.remove_request(req_id)
 
     def _update_handshake_waiters(
         self, rids_to_check: Optional[List[str]] = None

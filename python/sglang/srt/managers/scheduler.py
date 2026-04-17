@@ -1056,7 +1056,11 @@ class Scheduler(
             self.server_args.disaggregation_transfer_backend
         )
 
-        if self.draft_worker is None or self.spec_algorithm.is_ngram():
+        if (
+            self.draft_worker is None
+            or self.spec_algorithm.is_ngram()
+            or self.spec_algorithm.is_model_free()
+        ):
             draft_token_to_kv_pool = None
         elif self.spec_algorithm.supports_spec_v2() and self.enable_overlap:
             if self.server_args.enable_multi_layer_eagle:
@@ -1102,6 +1106,9 @@ class Scheduler(
                 tree_cache=self.tree_cache,
             )
 
+            speculator = None
+            if self.spec_algorithm.is_sssd() or self.spec_algorithm.is_pia():
+                speculator = self.draft_worker
             # The decode requests pending for pre-allocation
             self.disagg_decode_prealloc_queue = DecodePreallocQueue(
                 req_to_token_pool=self.req_to_token_pool,
@@ -1122,6 +1129,7 @@ class Scheduler(
                 pp_rank=self.pp_rank,
                 num_reserved_decode_tokens=self.server_args.num_reserved_decode_tokens,
                 transfer_backend=self.transfer_backend,
+                speculator=speculator,
             )
 
         elif self.disaggregation_mode == DisaggregationMode.PREFILL:
@@ -3377,12 +3385,18 @@ class Scheduler(
                 if recv_req.abort_all or decode_req.req.rid.startswith(recv_req.rid):
                     logger.debug(f"Abort prealloc queue request. {decode_req.req.rid=}")
                     decode_req.kv_receiver.abort()
+                    self.disagg_decode_prealloc_queue.remove_from_speculator(
+                        decode_req.req.rid
+                    )
 
             # Abort requests waiting for kvcache to release tree cache
             for decode_req in self.disagg_decode_transfer_queue.queue:
                 if recv_req.abort_all or decode_req.req.rid.startswith(recv_req.rid):
                     logger.debug(f"Abort transfer queue request. {decode_req.req.rid=}")
                     decode_req.kv_receiver.abort()
+                    self.disagg_decode_prealloc_queue.remove_from_speculator(
+                        decode_req.req.rid
+                    )
 
             # Abort requests already retracted to CPU cache
             if self.disagg_decode_prealloc_queue.retracted_queue:

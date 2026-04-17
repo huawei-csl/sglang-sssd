@@ -130,6 +130,8 @@ class FutureMap:
     def resolve_future(self, model_worker_batch: ModelWorkerBatch):
         if self.spec_algo.is_none():
             _resolve_future_token_ids(model_worker_batch.input_ids, self.token_ids_buf)
+        elif self.spec_algo.is_model_free():
+            return
         else:
             # TODO(lsyin): write future indices into spec_info.future_indices
             draft_input: EagleDraftInput = model_worker_batch.spec_info
@@ -164,6 +166,8 @@ class FutureMap:
         if self.spec_algo.is_none():
             intv = future_indices.interval
             self.token_ids_buf[intv] = batch_result.next_token_ids
+        elif self.spec_algo.is_model_free():
+            return
         else:
             draft_input: EagleDraftInput = batch_result.next_draft_input
             self.store_to_map_for_new_batch(future_indices, draft_input)

@@ -13,6 +13,7 @@ from sglang.benchmark.datasets.mooncake import MooncakeDataset
 from sglang.benchmark.datasets.openai_dataset import OpenAIDataset
 from sglang.benchmark.datasets.random import RandomDataset
 from sglang.benchmark.datasets.sharegpt import ShareGPTDataset
+from sglang.benchmark.datasets.sssd_datasets import SSSD_DATASETS, get_sssd_dataset
 
 DATASET_MAPPING: Dict[str, Type[BaseDataset]] = {
     "autobench": AutoBenchmarkDataset,
@@ -37,6 +38,8 @@ def get_dataset(args, tokenizer, model_id=None):
         dataset_name = "random-ids"
 
     if dataset_name not in DATASET_MAPPING:
+        if args.dataset_name in SSSD_DATASETS:
+            return get_sssd_dataset(args, tokenizer)
         raise ValueError(f"Unknown dataset: {args.dataset_name}")
 
     dataset_cls = DATASET_MAPPING[dataset_name]

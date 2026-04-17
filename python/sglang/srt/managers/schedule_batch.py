@@ -838,7 +838,10 @@ class Req(ReqDllmMixin):
         self.retraction_count = 0
         self.retraction_mb_id = None
 
-        # For observability
+        # For SSSD and PIA speculative decoding: the converted id as it is used by the speculator
+        self.sssd_id = None
+
+        # For metrics
         self.metrics_collector = metrics_collector
         if time_stats is not None:
             self.time_stats = SchedulerReqTimeStats.new_from_obj(time_stats)
@@ -2159,7 +2162,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             draft_input: EagleDraftInput = self.spec_info
             draft_input.prepare_for_decode(self)
 
-        if not self.spec_algorithm.is_none():
+        if self.spec_algorithm.is_speculative():
             # if spec decoding is used, the decode batch is prepared inside
             # `forward_batch_speculative_generation` after running draft models.
             return

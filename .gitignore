@@ -25,6 +25,9 @@ __pycache__/
 .installed.cfg
 *.egg
 MANIFEST
+tmp
+data
+speculative_bench_scripts/results
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -124,6 +127,7 @@ celerybeat.pid
 
 # Environments
 .env
+.envrc
 .venv
 env/
 venv/

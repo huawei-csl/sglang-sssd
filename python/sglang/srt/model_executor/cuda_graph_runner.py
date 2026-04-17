@@ -66,6 +66,7 @@ from sglang.srt.model_executor.forward_batch_info import (
 )
 from sglang.srt.model_executor.input_buffers import ForwardInputBuffers
 from sglang.srt.multiplex.pdmux_context import get_current_stream_idx, get_stream_groups
+from sglang.srt.speculative.model_free_utils import default_branch_func, get_bs_speclen
 from sglang.srt.utils import (
     empty_context,
     get_available_gpu_memory,
@@ -459,7 +460,11 @@ def set_torch_compile_config():
     monkey_patch_torch_compile()
 
 
-def get_batch_sizes_to_capture(model_runner: ModelRunner, num_tokens_per_bs=1):
+def get_batch_sizes_to_capture(
+    model_runner: ModelRunner,
+    num_tokens_per_bs=1,
+    num_tokens_per_bs_map: Optional[Dict[int, int]] = None,
+):
     server_args = model_runner.server_args
     capture_bs = server_args.cuda_graph_bs
     num_max_requests = model_runner.req_to_token_pool.size
@@ -482,8 +487,18 @@ def get_batch_sizes_to_capture(model_runner: ModelRunner, num_tokens_per_bs=1):
         # is very small. We add more values here to make sure we capture the maximum bs.
         capture_bs += [num_max_requests]
 
-    # Model input token count = bs * num_tokens_per_bs; must be a multiple of attn_tp_size.
-    capture_bs = [bs for bs in capture_bs if bs * num_tokens_per_bs % mul_base == 0]
+    # Model input token count must be aligned for attention/tp/cp kernels.
+    # For fixed speculation length we use num_tokens_per_bs; for adaptive speculation
+    # we validate each batch size against its per-bs token count.
+    if num_tokens_per_bs_map is None:
+        capture_bs = [bs for bs in capture_bs if bs * num_tokens_per_bs % mul_base == 0]
+    else:
+        capture_bs = [
+            bs
+            for bs in capture_bs
+            if bs in num_tokens_per_bs_map
+            and bs * num_tokens_per_bs_map[bs] % mul_base == 0
+        ]
     capture_bs = [bs for bs in capture_bs if bs <= num_max_requests]
     capture_bs = list(sorted(set(capture_bs)))
 
@@ -552,26 +567,47 @@ class CudaGraphRunner:
         self.dllm_config = DllmConfig.from_server_args(model_runner.server_args)
         self.is_dllm = self.dllm_config is not None
 
+        # Variable speculation length
+        self.speculative_adaptive = self.model_runner.server_args.speculative_adaptive
+
         self.capture_forward_mode = ForwardMode.DECODE
         self.capture_hidden_mode = CaptureHiddenMode.NULL
         self.num_tokens_per_bs = 1
+        self.num_tokens_per_bs_map = {}
         if model_runner.spec_algorithm.is_speculative():
             if self.model_runner.is_draft_worker:
                 # DFLASH draft workers reuse this runner for TARGET_VERIFY mode.
                 if not self.model_runner.spec_algorithm.is_dflash():
                     raise RuntimeError("This should not happen")
             self.capture_forward_mode = ForwardMode.TARGET_VERIFY
-            self.num_tokens_per_bs = (
-                self.model_runner.server_args.speculative_num_draft_tokens
-            )
+            if not self.speculative_adaptive:
+                self.num_tokens_per_bs = (
+                    self.model_runner.server_args.speculative_num_draft_tokens
+                )
         elif self.is_dllm:
             self.capture_forward_mode = ForwardMode.DLLM_EXTEND
             self.num_tokens_per_bs = self.dllm_config.block_size
 
         # Batch sizes to capture
-        self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(
-            model_runner, self.num_tokens_per_bs
-        )
+        if self.speculative_adaptive and model_runner.spec_algorithm.is_speculative():
+            # 1) Compute candidate capture batch sizes without fixed spec length.
+            candidate_capture_bs, _ = get_batch_sizes_to_capture(model_runner, 1)
+            # 2) Build adaptive per-bs speculation lengths.
+            self.num_tokens_per_bs_map = get_bs_speclen(
+                candidate_capture_bs, model_runner.spec_algorithm
+            )
+            # 3) Filter capture sizes again using per-bs token counts.
+            self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(
+                model_runner,
+                num_tokens_per_bs_map=self.num_tokens_per_bs_map,
+            )
+            self.num_tokens_per_bs_map = {
+                bs: self.num_tokens_per_bs_map[bs] for bs in self.capture_bs
+            }
+        else:
+            self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(
+                model_runner, self.num_tokens_per_bs
+            )
         log_info_on_rank0(logger, f"Capture cuda graph bs {self.capture_bs}")
         if KTRANSFORMERS_AVAILABLE:
             KTMoEWrapper.set_capture_batch_sizes(self.capture_bs)
@@ -582,7 +618,13 @@ class CudaGraphRunner:
 
         # Attention backend
         self.max_bs = max(self.capture_bs)
-        self.max_num_token = self.max_bs * self.num_tokens_per_bs
+        if not self.speculative_adaptive:
+            self.max_num_token = self.max_bs * self.num_tokens_per_bs
+        else:
+            self.max_num_token = max(
+                bs * nt for bs, nt in self.num_tokens_per_bs_map.items()
+            )
+
         self.model_runner.attn_backend.init_cuda_graph_state(
             self.max_bs, self.max_num_token
         )
@@ -668,11 +710,17 @@ class CudaGraphRunner:
         if forward_batch.replace_embeds is not None:
             return False
         if self.require_mlp_tp_gather:
+            if not self.speculative_adaptive:
+                num_toks_per_bs = self.num_tokens_per_bs
+            else:
+                index = bisect.bisect_left(self.capture_bs, forward_batch.batch_size)
+                if index >= len(self.capture_bs):
+                    return False
+                pad_bs = self.capture_bs[index]
+                num_toks_per_bs = self.num_tokens_per_bs_map[pad_bs]
             cuda_graph_bs = (
-                max(forward_batch.global_num_tokens_cpu) // self.num_tokens_per_bs
-                if self.model_runner.spec_algorithm.is_eagle()
-                or self.model_runner.spec_algorithm.is_standalone()
-                or self.model_runner.spec_algorithm.is_dflash()
+                max(forward_batch.global_num_tokens_cpu) // num_toks_per_bs
+                if self.model_runner.spec_algorithm.is_speculative()
                 else max(forward_batch.global_num_tokens_cpu)
             )
         else:
@@ -786,10 +834,14 @@ class CudaGraphRunner:
                         f"Capturing batches ({bs=} {avail_mem=:.2f} GB)"
                     )
 
+                if not self.speculative_adaptive:
+                    num_toks_per_bs = self.num_tokens_per_bs
+                else:
+                    num_toks_per_bs = self.num_tokens_per_bs_map[bs]
                 with patch_model(
                     self.model_runner.model,
                     bs in self.compile_bs,
-                    num_tokens=bs * self.num_tokens_per_bs,
+                    num_tokens=bs * num_toks_per_bs,
                     tp_group=self.model_runner.tp_group,
                 ) as forward:
                     (
@@ -867,8 +919,13 @@ class CudaGraphRunner:
         buffers: DecodeInputBuffers = self.buffers
         graph = self._create_device_graph()
         stream = self.stream
-        num_tokens = bs * self.num_tokens_per_bs
+        if not self.speculative_adaptive:
+            num_toks_per_bs = self.num_tokens_per_bs
+        else:
+            num_toks_per_bs = self.num_tokens_per_bs_map[bs]
+        num_tokens = bs * num_toks_per_bs
 
+        print(f"Capturing graph: bs: {bs}, toks_per_bs: {num_toks_per_bs}")
         # Graph inputs
         input_ids = buffers.input_ids[:num_tokens]
         req_pool_indices = buffers.req_pool_indices[:bs]
@@ -938,7 +995,7 @@ class CudaGraphRunner:
         else:
             global_dp_buffer_len = None
 
-        spec_info = self.get_spec_info(num_tokens)
+        spec_info = self.get_spec_info(num_toks_per_bs)
         if self.capture_hidden_mode != CaptureHiddenMode.FULL:
             self.capture_hidden_mode = (
                 spec_info.capture_hidden_mode if spec_info else CaptureHiddenMode.NULL
@@ -1118,16 +1175,20 @@ class CudaGraphRunner:
         self.recapture_if_needed(forward_batch)
 
         raw_bs = forward_batch.batch_size
-        raw_num_token = raw_bs * self.num_tokens_per_bs
+        if not self.speculative_adaptive:
+            num_toks_per_bs = self.num_tokens_per_bs
+        else:
+            index = bisect.bisect_left(self.capture_bs, raw_bs)
+            pad_bs = self.capture_bs[index]
+            num_toks_per_bs = self.num_tokens_per_bs_map[pad_bs]
+        raw_num_token = raw_bs * num_toks_per_bs
 
         # Pad
         if self.require_mlp_tp_gather:
             max_num_tokens = max(forward_batch.global_num_tokens_cpu)
             max_batch_size = (
-                max_num_tokens / self.num_tokens_per_bs
-                if self.model_runner.spec_algorithm.is_eagle()
-                or self.model_runner.spec_algorithm.is_standalone()
-                or self.model_runner.spec_algorithm.is_dflash()
+                max_num_tokens / num_toks_per_bs
+                if self.model_runner.spec_algorithm.is_speculative()
                 else max_num_tokens
             )
             index = bisect.bisect_left(self.capture_bs, max_batch_size)
@@ -1142,7 +1203,7 @@ class CudaGraphRunner:
             bs=bs,
             seq_len_fill_value=self.seq_len_fill_value,
             require_gathered_buffer=self.require_gathered_buffer,
-            num_tokens_per_bs=self.num_tokens_per_bs,
+            num_tokens_per_bs=num_toks_per_bs,
             nsa_enable_prefill_cp=self.nsa_enable_prefill_cp,
             enable_num_token_non_padded_flag=enable_num_token_non_padded(
                 self.model_runner.server_args
@@ -1164,7 +1225,13 @@ class CudaGraphRunner:
                 spec_info=forward_batch.spec_info,
             )
         if forward_batch.forward_mode.is_idle() and forward_batch.spec_info is not None:
-            forward_batch.spec_info.custom_mask = buffers.custom_mask
+            if not self.speculative_adaptive:
+                forward_batch.spec_info.custom_mask = buffers.custom_mask
+            else:
+                forward_batch.spec_info.custom_mask = (
+                    self.get_variable_speculation_mask(num_toks_per_bs)
+                )
+
         # Attention backend
         if self.enable_pdmux:
             stream_idx = get_current_stream_idx()
@@ -1251,7 +1318,7 @@ class CudaGraphRunner:
             assert isinstance(output, PPProxyTensors)
             return PPProxyTensors({k: v[: self.bs] for k, v in output.tensors.items()})
 
-    def get_spec_info(self, num_tokens: int):
+    def get_spec_info(self, num_speculative_tokens: int):
         spec_info = None
         if (
             self.model_runner.spec_algorithm.is_eagle()
@@ -1277,6 +1344,48 @@ class CudaGraphRunner:
                     seq_lens_sum=None,
                     seq_lens_cpu=None,
                 )
+
+        elif self.model_runner.spec_algorithm.is_model_free():
+            from sglang.srt.speculative.model_free_info import ModelFreeVerifyInput
+
+            if self.model_runner.is_draft_worker:
+                raise RuntimeError("This should not happen.")
+            else:
+                if not self.speculative_adaptive:
+                    spec_info = ModelFreeVerifyInput(
+                        draft_token=None,
+                        custom_mask=self.buffers.custom_mask,
+                        positions=None,
+                        retrive_index=None,
+                        retrive_next_token=None,
+                        retrive_next_sibling=None,
+                        retrive_cum_len=None,
+                        spec_steps=self.model_runner.server_args.speculative_num_steps,
+                        topk=self.model_runner.server_args.speculative_eagle_topk,
+                        draft_token_num=self.model_runner.server_args.speculative_num_draft_tokens,
+                        capture_hidden_mode=CaptureHiddenMode.NULL,
+                        seq_lens_sum=None,
+                        seq_lens_cpu=None,
+                    )
+                else:
+                    branch_len, top_k = default_branch_func(num_speculative_tokens)
+                    spec_info = ModelFreeVerifyInput(
+                        draft_token=None,
+                        custom_mask=self.get_variable_speculation_mask(
+                            num_speculative_tokens
+                        ),
+                        positions=None,
+                        retrive_index=None,
+                        retrive_next_token=None,
+                        retrive_next_sibling=None,
+                        retrive_cum_len=None,
+                        spec_steps=branch_len,
+                        topk=top_k,
+                        draft_token_num=num_speculative_tokens,
+                        capture_hidden_mode=CaptureHiddenMode.NULL,
+                        seq_lens_sum=None,
+                        seq_lens_cpu=None,
+                    )
         elif self.model_runner.spec_algorithm.is_dflash():
             from sglang.srt.speculative.dflash_info import DFlashVerifyInput
             from sglang.srt.speculative.dflash_utils import (
@@ -1319,6 +1428,16 @@ class CudaGraphRunner:
             spec_info.capture_hidden_mode = CaptureHiddenMode.NULL
 
         return spec_info
+
+    def get_variable_speculation_mask(self, speculative_tokens):
+        return torch.ones(
+            (
+                (self.buffers.seq_lens.sum().item() + self.max_num_token)
+                * speculative_tokens
+            ),
+            dtype=torch.bool,
+            device=self.device,
+        )
 
 
 CUDA_GRAPH_CAPTURE_FAILED_MSG = (

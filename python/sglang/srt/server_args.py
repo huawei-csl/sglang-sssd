@@ -520,6 +520,7 @@ class ServerArgs:
     speculative_ngram_external_sam_budget: int = 0
     speculative_ngram_external_corpus_max_tokens: int = 10000000
     enable_multi_layer_eagle: bool = False
+    speculative_adaptive: Optional[bool] = False
 
     # Expert parallelism
     ep_size: int = 1
@@ -3257,7 +3258,26 @@ class ServerArgs:
                     "Mixed chunked prefill is disabled because of using dflash speculative decoding."
                 )
 
-        if self.speculative_algorithm in ("EAGLE", "EAGLE3", "STANDALONE"):
+        if self.speculative_adaptive and self.speculative_algorithm not in [
+            "SSSD",
+            "PIA",
+            "PLD",
+            "REST",
+        ]:
+            logger.warning(
+                f"speculative_adaptive is only supported by SSSD, and won't be used by {self.speculative_algorithm}"
+            )
+            self.speculative_adaptive = False
+
+        if self.speculative_algorithm in (
+            "EAGLE",
+            "EAGLE3",
+            "STANDALONE",
+            "SSSD",
+            "PIA",
+            "REST",
+            "PLD",
+        ):
             if self.speculative_algorithm == "STANDALONE" and self.enable_dp_attention:
                 # TODO: support dp attention for standalone speculative decoding
                 raise ValueError(
@@ -3276,7 +3296,7 @@ class ServerArgs:
             ):
                 self.disable_overlap_schedule = False
                 logger.warning(
-                    "Spec v2 is enabled for eagle/eagle3 speculative decoding and overlap schedule is turned on."
+                    f"Spec v2 is enabled for {self.speculative_algorithm.lower()} speculative decoding and overlap schedule is turned on."
                 )
                 if (
                     self.speculative_eagle_topk is not None
@@ -3324,6 +3344,14 @@ class ServerArgs:
                             "DeepSeek MTP does not require setting speculative_draft_model_path."
                         )
 
+            # Auto choose parameters
+            if self.speculative_algorithm == "PLD" and not self.speculative_adaptive:
+                assert (
+                    self.speculative_num_steps is not None
+                ), "For PLD, specify the speculative_num_steps"
+                self.speculative_num_draft_tokens = self.speculative_num_steps + 1
+                self.speculative_eagle_topk = 1
+
             if self.speculative_num_steps is None:
                 assert (
                     self.speculative_eagle_topk is None
@@ -3354,13 +3382,26 @@ class ServerArgs:
                 )
                 self.speculative_num_draft_tokens = self.speculative_num_steps + 1
 
+        if self.speculative_algorithm in [
+            "EAGLE",
+            "EAGLE3",
+            "SSSD",
+            "PIA",
+            "PLD",
+            "REST",
+        ]:
+            if self.speculative_eagle_topk > 1 and self.attention_backend == "ascend":
+                raise ValueError(
+                    "speculative_eagle_topk > 1 is currently disabled on the 'ascend' attention backend. "
+                    "Use topk=1 to stabilize single-chain speculation."
+                )
             if (
                 self.speculative_eagle_topk > 1
                 and self.page_size > 1
                 and self.attention_backend not in ["flashinfer", "fa3"]
             ):
                 raise ValueError(
-                    "speculative_eagle_topk > 1 with page_size > 1 is unstable and produces incorrect results for paged attention backends. This combination is only supported for the 'flashinfer' backend."
+                    "speculative_eagle_topk > 1 with page_size > 1 is unstable and produces incorrect results for paged attention backends. This combination is only supported for 'flashinfer' and 'fa3'."
                 )
 
         if self.speculative_algorithm == "NGRAM":
@@ -4755,6 +4796,12 @@ class ServerArgs:
             default=ServerArgs.export_metrics_to_file_dir,
             help="Directory path for writing performance metrics files (required when --export-metrics-to-file is enabled).",
         )
+        parser.add_argument(
+            "--enable_metrics",
+            action="store_true",
+            default=ServerArgs.enable_metrics,
+            help="Enable metrics collection",
+        )
 
         # API related
         parser.add_argument(
@@ -5098,7 +5145,18 @@ class ServerArgs:
         parser.add_argument(
             "--speculative-algorithm",
             type=str,
-            choices=["DFLASH", "EAGLE", "EAGLE3", "NEXTN", "STANDALONE", "NGRAM"],
+            choices=[
+                "DFLASH",
+                "EAGLE",
+                "EAGLE3",
+                "NEXTN",
+                "STANDALONE",
+                "NGRAM",
+                "SSSD",
+                "PIA",
+                "REST",
+                "PLD",
+            ],
             help="Speculative algorithm.",
         )
         parser.add_argument(
@@ -5266,6 +5324,11 @@ class ServerArgs:
             "--enable-multi-layer-eagle",
             action="store_true",
             help="Enable multi-layer Eagle speculative decoding.",
+        )
+        parser.add_argument(
+            "--speculative-adaptive",
+            action="store_true",
+            help="Adapt the speculation length based on current batch size and hardware features.",
         )
 
         # Expert parallelism

@@ -20,6 +20,10 @@ class SpeculativeAlgorithm(Enum):
     EAGLE3 = auto()
     STANDALONE = auto()
     NGRAM = auto()
+    SSSD = auto()
+    PIA = auto()
+    REST = auto()
+    PLD = auto()
     NONE = auto()
 
     @classmethod
@@ -44,6 +48,9 @@ class SpeculativeAlgorithm(Enum):
     def is_eagle3(self) -> bool:
         return self == SpeculativeAlgorithm.EAGLE3
 
+    def is_speculative(self):
+        return not self == SpeculativeAlgorithm.NONE
+
     def is_dflash(self) -> bool:
         return self == SpeculativeAlgorithm.DFLASH
 
@@ -52,6 +59,26 @@ class SpeculativeAlgorithm(Enum):
 
     def is_ngram(self) -> bool:
         return self == SpeculativeAlgorithm.NGRAM
+
+    def is_sssd(self) -> bool:
+        return self == SpeculativeAlgorithm.SSSD
+
+    def is_pia(self) -> bool:
+        return self == SpeculativeAlgorithm.PIA
+
+    def is_rest(self) -> bool:
+        return self == SpeculativeAlgorithm.REST
+
+    def is_pld(self) -> bool:
+        return self == SpeculativeAlgorithm.PLD
+
+    def is_model_free(self) -> bool:
+        return (
+            self == SpeculativeAlgorithm.SSSD
+            or self == SpeculativeAlgorithm.PIA
+            or self == SpeculativeAlgorithm.REST
+            or self == SpeculativeAlgorithm.PLD
+        )
 
     def supports_spec_v2(self) -> bool:
         return self.is_eagle() or self.is_standalone()
@@ -118,6 +145,41 @@ class SpeculativeAlgorithm(Enum):
             from sglang.srt.speculative.ngram_worker import NGRAMWorker
 
             return NGRAMWorker
+        elif self.is_sssd():
+            if enable_overlap:
+                raise ValueError(
+                    f"Speculative algorithm {self.name} does not support overlap worker creation."
+                )
+
+            from sglang.srt.speculative.sssd_worker import SSSDWorker
+
+            return SSSDWorker
+        elif self.is_pia():
+            if enable_overlap:
+                raise ValueError(
+                    f"Speculative algorithm {self.name} does not support overlap worker creation."
+                )
+            from sglang.srt.speculative.pia_worker import PIAWorker
+
+            return PIAWorker
+        elif self.is_rest():
+            if enable_overlap:
+                raise ValueError(
+                    f"Speculative algorithm {self.name} does not support overlap worker creation."
+                )
+
+            from sglang.srt.speculative.rest_worker import RESTWorker
+
+            return RESTWorker
+        elif self.is_pld():
+            if enable_overlap:
+                raise ValueError(
+                    f"Speculative algorithm {self.name} does not support overlap worker creation."
+                )
+
+            from sglang.srt.speculative.pld_worker import PLDWorker
+
+            return PLDWorker
 
         raise ValueError("Unreachable code path in create_worker.")
 

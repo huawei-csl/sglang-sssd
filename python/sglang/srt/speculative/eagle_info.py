@@ -43,6 +43,7 @@ from sglang.srt.speculative.spec_utils import (
     generate_simulated_accept_index,
     get_src_tgt_cache_loc,
     get_target_cache_loc,
+    softmax_topk_then_topp,
 )
 from sglang.srt.utils import is_cuda, next_power_of_2
 
@@ -72,6 +73,7 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
     seq_lens_sum: int
     seq_lens_cpu: torch.Tensor
     grammar: BaseGrammarObject = None
+    fused: bool = True
 
     # Shape info for padding
     num_tokens_per_req: int = -1
@@ -330,27 +332,49 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
             )
 
         else:
-            # apply temperature and get target probs
-            expanded_temperature = torch.repeat_interleave(
-                sampling_info.temperatures, self.draft_token_num, dim=0
-            )  # (bs * draft_token_num, 1)
+            if not self.fused:
+                # apply temperature and get target probs
+                expanded_temperature = torch.repeat_interleave(
+                    sampling_info.temperatures, self.draft_token_num, dim=0
+                )  # (bs * draft_token_num, 1)
 
-            target_probs = F.softmax(
-                logits_output.next_token_logits / expanded_temperature, dim=-1
-            )  # (bs * draft_token_num, vocab_size)
-            target_probs = top_k_renorm_prob(
-                target_probs,
-                torch.repeat_interleave(
-                    sampling_info.top_ks, self.draft_token_num, dim=0
-                ),
-            )  # (bs * draft_token_num, vocab_size)
-            if sampling_info.need_top_p_sampling:
-                target_probs = top_p_renorm_prob(
+                target_probs = F.softmax(
+                    logits_output.next_token_logits / expanded_temperature, dim=-1
+                )  # (bs * draft_token_num, vocab_size)
+                target_probs = top_k_renorm_prob(
                     target_probs,
                     torch.repeat_interleave(
-                        sampling_info.top_ps, self.draft_token_num, dim=0
+                        sampling_info.top_ks, self.draft_token_num, dim=0
                     ),
+                )  # (bs * draft_token_num, vocab_size)
+                if sampling_info.need_top_p_sampling:
+                    target_probs = top_p_renorm_prob(
+                        target_probs,
+                        torch.repeat_interleave(
+                            sampling_info.top_ps, self.draft_token_num, dim=0
+                        ),
+                    )
+            else:
+                flat_logits = logits_output.next_token_logits  # [B, V]
+                flat_ks = torch.repeat_interleave(
+                    sampling_info.top_ks, self.draft_token_num, dim=0
+                ).view(-1)
+                flat_ps = torch.repeat_interleave(
+                    sampling_info.top_ps, self.draft_token_num, dim=0
+                ).view(-1)
+                flat_T = torch.repeat_interleave(
+                    sampling_info.temperatures, self.draft_token_num, dim=0
+                ).view(-1)
+
+                target_probs, _ = softmax_topk_then_topp(
+                    logits=flat_logits,
+                    ks=flat_ks,
+                    ps=flat_ps,
+                    temperatures=flat_T,
+                    return_sample=False,
+                    generator=None,
                 )
+
             target_probs = target_probs.reshape(bs, self.draft_token_num, -1)
 
             draft_probs = torch.zeros(

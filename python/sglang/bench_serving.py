@@ -1279,7 +1279,7 @@ async def benchmark(
         )
     else:
         print(
-            f"Warmup completed with {args.warmup_requests} sequences. Starting main benchmark run..."
+            f"Warmup completed with {warmup_requests} sequences. Starting main benchmark run..."
         )
 
     # Flush cache
@@ -1851,7 +1851,7 @@ def run_benchmark(args_: argparse.Namespace):
     model_id = args.served_model_name or args.model
     tokenizer_id = args.tokenizer if args.tokenizer is not None else args.model
     tokenizer = get_tokenizer(tokenizer_id)
-    input_requests = get_dataset(args, tokenizer, model_id)
+    input_requests = get_dataset(args, tokenizer)
 
     # compatible with SimpleNamespace
     if not hasattr(args, "flush_cache"):
@@ -1948,6 +1948,20 @@ if __name__ == "__main__":
             "image",
             "mooncake",
             "longbench_v2",
+            "mt-bench",
+            "gsm8k",
+            "dolly-15k",
+            "pg19-test",
+            "math-500",
+            "humaneval",
+            "swe-bench",
+            "hagrid",
+            "mt-bench-de",
+            "mt-bench-ru",
+            "mt-bench-fr",
+            "mt-bench-id",
+            "mt-bench-jp",
+            "mt-bench-it",
         ],
         help="Name of the dataset to benchmark on.",
     )
